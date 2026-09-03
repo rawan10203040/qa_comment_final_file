@@ -1,5 +1,4 @@
-
 streamlit
-polars
-fastexcel
+pandas
+openpyxl
 xlsxwriter
