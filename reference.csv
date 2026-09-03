@@ -1,0 +1,81 @@
+﻿FunctionName,Action,Area,Group,Team leader
+Part Options,analysis,-,-,-
+ZPCN,analysis,-,-,-
+OBS code,analysis,-,-,-
+Tags,analysis,-,-,-
+Gidep,analysis,-,-,-
+Packing,analysis,-,-,-
+Other Qualification Features,ok,Qualification,Qualification,Mohamed Farouk
+Reach version,analysis,-,-,-
+InroductionDate,analysis,Inroduction Date,Qualification,Mohamed Farouk
+Lifecycle,ok,Risk,Lifecycle,Hamed mohamed
+Die Family,ok,Parts,Parts,Mohamed Sayed Farouk
+New Market code,ok,Market,Market,Hatem Hussein
+Forecast PLP,ok,Forecast,Forecast,Ahmed Abotaleb
+TradeCodes,ok,Trade Codes,Trade Codes,Ahmed Abotaleb
+New OBS code,analysis,-,-,-
+Exemption,ok,Compliance - Main,Compliance,Mohamed Nabil
+cross flag,analysis,-,-,-
+Rohs,ok,Compliance - Main,Compliance,Mohamed Nabil
+Part Marking Image,ok,Part Image,Parts,Abdelrahman Ata
+Reach,ok,Compliance - Main,Compliance,Mohamed Nabil
+Reliability,ok,Qualification,Qualification,Mohamed Farouk
+Halogen Free,ok,Compliance - Main,Compliance,Mohamed Nabil
+China Rohs,ok,Compliance - Others,Compliance,Mohamed Nabil
+EMRT,ok,Part conflict Mineral,Part conflict Mineral,Ahmed Abotaleb
+CMRT,ok,Part conflict Mineral,Part conflict Mineral,Ahmed Abotaleb
+QualificationGrad,ok,Qualification,Qualification,Mohamed Farouk
+Automotive,ok,Qualification,Qualification,Mohamed Farouk
+Scip,analysis,-,-,-
+Chemical,ok,Chemical,Compliance,Mohamed Nabil
+Compliance level,analysis,Qualification .. Others,Qualification,Mohamed Farouk
+New Parametric,ok,Parametric,Parts,Mohamed Sayed Farouk
+Country of Origin,ok,SC location,SC sites,Mostafa Ahmed
+SiteIDs,ok,SC location,SC sites,Mostafa Ahmed
+Family,ok,Parts,Parts,Mohamed Sayed Farouk
+Part Marking,ok,Part Marking,Parts,Abdelrahman Ata
+Datasheet,ok,Parts,Parts,Mohamed Sayed Farouk
+PFAS,ok,Compliance - Others,Compliance,Mohamed Nabil
+LeadFinishPlating,ok,MFG - Main,MFG,Ahmed ibraheem
+Lead Free Process Capability,ok,MFG - Main,MFG,Ahmed ibraheem
+ReflowSolderTime,ok,MFG - Main,MFG,Ahmed ibraheem
+California Proposition 65,ok,Compliance - Others,Compliance,Mohamed Nabil
+NumberOfReflowCycle,ok,MFG - Main,MFG,Ahmed ibraheem
+Facility Type,ok,SC location,SC sites,Mostafa Ahmed
+NetWeight,ok,MFG - Others,MFG,Ahmed ibraheem
+Automotive date,ok,Qualification .. Others,Qualification,Mohamed Farouk
+MSL,ok,MFG - Main,MFG,Ahmed ibraheem
+MaximumReflowTemperature,ok,MFG - Main,MFG,Ahmed ibraheem
+Shelf Life Condition,ok,MFG - Others,MFG,Ahmed ibraheem
+MaximumWaveTemperature,ok,MFG - Main,MFG,Ahmed ibraheem
+WaveSolderTime,ok,MFG - Main,MFG,Ahmed ibraheem
+TSCA,ok,Compliance - Others,Compliance,Mohamed Nabil
+BaseMaterial,ok,MFG - Main,MFG,Ahmed ibraheem
+Military,ok,Qualification,Qualification,Mohamed Farouk
+Shelf Life Months,ok,MFG - Others,MFG,Ahmed ibraheem
+PinOut,ok,PinOut,Parts,Abdelrahman Ata
+Underplating,ok,MFG - Main,MFG,Ahmed ibraheem
+Package,ok,Package,Parts,Abdelrahman Ata
+POPs,ok,Compliance - Others,Compliance,Mohamed Nabil
+ELV Directive,ok,Compliance - Others,Compliance,Mohamed Nabil
+EU REACH Restricted,ok,Compliance - Others,Compliance,Mohamed Nabil
+WEEE,ok,Compliance - Others,Compliance,Mohamed Nabil
+Asbestos,ok,Compliance - Others,Compliance,Mohamed Nabil
+EU Batteries Regulation,ok,Compliance - Others,Compliance,Mohamed Nabil
+GADSL,ok,Compliance - Others,Compliance,Mohamed Nabil
+Korea RoHS,ok,Compliance - Others,Compliance,Mohamed Nabil
+Ozone Layer Depletion 2009,ok,Compliance - Others,Compliance,Mohamed Nabil
+Stockholm POPs,ok,Compliance - Others,Compliance,Mohamed Nabil
+Lead Free,ok,Compliance - Others,Compliance,Mohamed Nabil
+Rohs version,ok,Compliance - Others,Compliance,Mohamed Nabil
+original introduction date,ok,InroductionDate,InroductionDate,Mohamed Farouk
+Shelf Life Start,ok,MFG - Others,MFG,Ahmed ibraheem
+Baking Time,ok,MFG - Others,MFG,Ahmed ibraheem
+Part Mating,ok,MFG - Others,MFG,Ahmed ibraheem
+Product,ok,Parts,Parts,Mohamed Sayed Farouk
+Countrfiet,analysis,-,-,-
+ProcessTechnology,ok,Technology,Technology,Mostafa Ahmed
+DieArea,ok,Technology,Technology,Mostafa Ahmed
+WaferSize,ok,Technology,Technology,Mostafa Ahmed
+Fabrication Technology,ok,Technology,Technology,Mostafa Ahmed
+Fabrication,ok,SC location,SC sites,Mostafa Ahmed
