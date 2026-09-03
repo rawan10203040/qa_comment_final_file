@@ -133,6 +133,7 @@ REFERENCE_COLUMNS = [
 reference_df = pl.DataFrame(
     REFERENCE_DATA,
     schema=REFERENCE_COLUMNS
+     orient="row"
 )
 
 
@@ -184,7 +185,8 @@ if uploaded_files:
             )
 
             df = pl.read_excel(
-                io.BytesIO(file_bytes)
+                   io.BytesIO(file_bytes),
+                   infer_schema_length=None
             )
 
             # ==================================================
