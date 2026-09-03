@@ -4,4 +4,3 @@ fastexcel
 openpyxl
 xlsxwriter
 pandas
-
