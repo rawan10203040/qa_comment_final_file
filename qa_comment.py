@@ -1,49 +1,49 @@
 
 import streamlit as st
-import polars as pl
+import pandas as pd
 from pathlib import Path
 
 st.set_page_config(
-    page_title="QA Test",
-    page_icon="🧪",
+    page_title="QA Comment Test",
+    page_icon="🧪"
 )
 
-st.title("🧪 QA Comment App - Diagnostic Test")
+st.title("🧪 QA Comment Diagnostic")
 
-st.success("✅ Streamlit started successfully")
+st.success("✅ Streamlit is working")
 
-st.write("Testing Polars...")
+st.write("Testing Pandas...")
 
 try:
-    test_df = pl.DataFrame({
+    test = pd.DataFrame({
         "Test": ["OK"],
-        "Value": [1],
+        "Value": [1]
     })
 
-    st.success("✅ Polars is working")
-    st.dataframe(test_df)
+    st.success("✅ Pandas is working")
+    st.dataframe(test)
 
 except Exception as e:
-    st.error("❌ Polars test failed")
+    st.error("❌ Pandas failed")
     st.exception(e)
     st.stop()
 
 
 st.write("Testing reference.xlsx...")
 
-reference_file = Path(__file__).resolve().parent / "reference.xlsx"
+reference_file = (
+    Path(__file__).resolve().parent
+    / "reference.xlsx"
+)
+
 
 if not reference_file.exists():
 
-    st.error(
-        "❌ reference.xlsx NOT FOUND"
-    )
+    st.error("❌ reference.xlsx NOT FOUND")
 
-    st.write(
-        "Expected location:"
+    st.code(
+        str(reference_file)
     )
-
-    st.code(str(reference_file))
 
     st.stop()
 
@@ -55,30 +55,33 @@ st.success(
 
 try:
 
-    reference = pl.read_excel(
+    reference = pd.read_excel(
         reference_file,
-        engine="calamine",
-        infer_schema_length=1000,
+        engine="openpyxl"
     )
 
     st.success(
-        f"✅ Reference loaded successfully — "
-        f"{reference.height:,} rows"
+        f"✅ Reference loaded: "
+        f"{len(reference):,} rows"
     )
 
-    st.write("Columns:")
+    st.write(
+        "Columns:"
+    )
 
-    st.write(reference.columns)
+    st.write(
+        list(reference.columns)
+    )
 
     st.dataframe(
         reference.head(20),
-        use_container_width=True,
+        use_container_width=True
     )
 
 except Exception as e:
 
     st.error(
-        "❌ Failed to read reference.xlsx"
+        "❌ Could not read reference.xlsx"
     )
 
     st.exception(e)
@@ -87,11 +90,5 @@ except Exception as e:
 
 
 st.success(
-    "🎉 ALL DIAGNOSTIC TESTS PASSED"
-)
-
-st.info(
-    "If you can see this message, "
-    "Streamlit + Polars + reference.xlsx "
-    "are working correctly."
+    "🎉 DIAGNOSTIC TEST PASSED"
 )
