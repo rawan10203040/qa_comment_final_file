@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 import polars as pl
 import pandas as pd
@@ -735,4 +734,3 @@ if uploaded_files:
         st.warning(
             "No files were generated."
         )
-```
