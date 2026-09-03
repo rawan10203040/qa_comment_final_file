@@ -1,8 +1,14 @@
-import streamlit as st
-import pandas as pd
+# ============================================================
+# QA COMMENT UPDATER - FAST STREAMLIT VERSION
+# Input Excel + Reference Excel -> Updated Excel + Summary
+# ============================================================
+
 import io
 import zipfile
 from pathlib import Path
+
+import streamlit as st
+import polars as pl
 
 
 # ============================================================
@@ -11,26 +17,13 @@ from pathlib import Path
 
 st.set_page_config(
     page_title="QA Comment Updater",
-    page_icon="📊",
+    page_icon="✅",
     layout="wide"
 )
 
 
 # ============================================================
-# TITLE
-# ============================================================
-
-st.title("📊 QA Comment Updater")
-
-st.write(
-    "Upload one or more Excel files to update QAComment, "
-    "add Area / Group / Team leader from reference.xlsx, "
-    "remove Analysis and OK rows, and generate a summary."
-)
-
-
-# ============================================================
-# FILE PATH
+# PATHS
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -38,36 +31,83 @@ REFERENCE_FILE = BASE_DIR / "reference.xlsx"
 
 
 # ============================================================
-# HELPER FUNCTIONS
+# CONSTANTS
 # ============================================================
 
-def clean_column_name(column):
+REQUIRED_INPUT_COLUMNS = [
+    "FunctionName",
+    "IsMultiValue",
+    "HasBlankValue",
+    "QAComment",
+]
+
+REQUIRED_REFERENCE_COLUMNS = [
+    "FunctionName",
+    "Action",
+    "Area",
+    "Group",
+    "Team leader",
+]
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def clean_column_names(df: pl.DataFrame) -> pl.DataFrame:
     """
     Clean Excel column names.
     """
-    return str(column).strip()
+    new_names = {}
+
+    for col in df.columns:
+        new_names[col] = str(col).strip()
+
+    return df.rename(new_names)
 
 
-def normalize_text(value):
+def normalize_columns(df: pl.DataFrame, required_columns: list[str]) -> pl.DataFrame:
     """
-    Convert value to clean lowercase text.
+    Rename columns case-insensitively so small differences
+    in Excel headers do not break the app.
     """
-    if pd.isna(value):
-        return ""
 
-    return str(value).strip().lower()
+    lookup = {
+        str(col).strip().lower(): col
+        for col in df.columns
+    }
+
+    rename_map = {}
+
+    for required in required_columns:
+        key = required.strip().lower()
+
+        if key not in lookup:
+            raise ValueError(
+                f"Missing required column: '{required}'"
+            )
+
+        actual_name = lookup[key]
+
+        if actual_name != required:
+            rename_map[actual_name] = required
+
+    if rename_map:
+        df = df.rename(rename_map)
+
+    return df
 
 
-def normalize_header(value):
+def normalize_bool_expression(column: str) -> pl.Expr:
     """
-    Normalize header for comparison.
+    Convert TRUE/FALSE-like Excel values into normalized strings.
     """
+
     return (
-        str(value)
-        .strip()
-        .lower()
-        .replace("_", "")
-        .replace(" ", "")
+        pl.col(column)
+        .cast(pl.String, strict=False)
+        .str.strip_chars()
+        .str.to_lowercase()
     )
 
 
@@ -75,1068 +115,677 @@ def normalize_header(value):
 # LOAD REFERENCE
 # ============================================================
 
-@st.cache_data
-def load_reference(reference_path):
-    """
-    Read reference.xlsx using pandas/openpyxl.
-    """
+@st.cache_data(show_spinner=False)
+def load_reference() -> pl.DataFrame:
 
-    if not reference_path.exists():
+    if not REFERENCE_FILE.exists():
         raise FileNotFoundError(
-            f"Reference file not found:\n{reference_path}"
+            f"reference.xlsx was not found in:\n{REFERENCE_FILE}"
         )
 
-    # --------------------------------------------------------
-    # Read first sheet
-    # --------------------------------------------------------
+    try:
+        reference = pl.read_excel(
+            REFERENCE_FILE,
+            engine="calamine",
+            infer_schema_length=1000,
+        )
 
-    reference = pd.read_excel(
-        reference_path,
-        engine="openpyxl"
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not read reference.xlsx:\n{e}"
+        )
+
+    reference = clean_column_names(reference)
+
+    reference = normalize_columns(
+        reference,
+        REQUIRED_REFERENCE_COLUMNS
     )
 
-    # --------------------------------------------------------
-    # Clean headers
-    # --------------------------------------------------------
-
-    reference.columns = [
-        clean_column_name(col)
-        for col in reference.columns
-    ]
-
-    # --------------------------------------------------------
-    # Case-insensitive header mapping
-    # --------------------------------------------------------
-
-    header_mapping = {}
-
-    for col in reference.columns:
-
-        normalized = normalize_header(col)
-
-        if normalized == "functionname":
-            header_mapping[col] = "FunctionName"
-
-        elif normalized == "action":
-            header_mapping[col] = "Action"
-
-        elif normalized == "area":
-            header_mapping[col] = "Area"
-
-        elif normalized == "group":
-            header_mapping[col] = "Group"
-
-        elif normalized in [
-            "teamleader",
-            "team_leader"
-        ]:
-            header_mapping[col] = "Team leader"
-
-    reference = reference.rename(
-        columns=header_mapping
+    # Keep only the columns we actually need
+    reference = reference.select(
+        REQUIRED_REFERENCE_COLUMNS
     )
 
-    # --------------------------------------------------------
-    # Required columns
-    # --------------------------------------------------------
-
-    required_columns = [
-        "FunctionName",
-        "Action",
-        "Area",
-        "Group",
-        "Team leader"
-    ]
-
-    missing_columns = [
-        col
-        for col in required_columns
-        if col not in reference.columns
-    ]
-
-    if missing_columns:
-        raise ValueError(
-            "reference.xlsx is missing these columns:\n"
-            + "\n".join(
-                f"- {col}"
-                for col in missing_columns
-            )
-            + "\n\nColumns found in reference.xlsx:\n"
-            + "\n".join(
-                f"- {col}"
-                for col in reference.columns
-            )
+    # Convert everything to string
+    for col in REQUIRED_REFERENCE_COLUMNS:
+        reference = reference.with_columns(
+            pl.col(col)
+            .cast(pl.String, strict=False)
+            .fill_null("-")
+            .str.strip_chars()
+            .alias(col)
         )
 
-    # --------------------------------------------------------
-    # Keep only required columns
-    # --------------------------------------------------------
-
-    reference = reference[
-        required_columns
-    ].copy()
-
-    # --------------------------------------------------------
-    # Clean values
-    # --------------------------------------------------------
-
-    for col in required_columns:
-
-        reference[col] = (
-            reference[col]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-        )
-
-    # --------------------------------------------------------
     # Create lookup key
-    # --------------------------------------------------------
-
-    reference["_lookup"] = (
-        reference["FunctionName"]
-        .str.strip()
-        .str.lower()
+    reference = reference.with_columns(
+        pl.col("FunctionName")
+        .str.to_lowercase()
+        .alias("_lookup")
     )
 
-    # --------------------------------------------------------
-    # Remove empty FunctionName
-    # --------------------------------------------------------
-
-    reference = reference[
-        reference["_lookup"] != ""
-    ].copy()
-
-    # --------------------------------------------------------
-    # Remove duplicate FunctionName
-    # Keep first occurrence
-    # --------------------------------------------------------
-
-    reference = reference.drop_duplicates(
+    # Remove duplicate FunctionName entries
+    reference = reference.unique(
         subset=["_lookup"],
         keep="first"
     )
-
-    # --------------------------------------------------------
-    # Replace empty reference values
-    # --------------------------------------------------------
-
-    for col in [
-        "Action",
-        "Area",
-        "Group",
-        "Team leader"
-    ]:
-
-        reference[col] = reference[col].replace(
-            "",
-            "-"
-        )
 
     return reference
 
 
 # ============================================================
-# LOAD REFERENCE
+# PROCESS ONE FILE
+# ============================================================
+
+def process_file(
+    uploaded_file,
+    reference: pl.DataFrame
+):
+    """
+    Process one uploaded Excel file.
+    """
+
+    file_bytes = uploaded_file.getvalue()
+
+    # --------------------------------------------------------
+    # Read Excel using Polars + Calamine
+    # --------------------------------------------------------
+
+    try:
+        df = pl.read_excel(
+            io.BytesIO(file_bytes),
+            engine="calamine",
+            infer_schema_length=1000,
+        )
+
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not read '{uploaded_file.name}':\n{e}"
+        )
+
+    # --------------------------------------------------------
+    # Clean columns
+    # --------------------------------------------------------
+
+    df = clean_column_names(df)
+
+    df = normalize_columns(
+        df,
+        REQUIRED_INPUT_COLUMNS
+    )
+
+    # --------------------------------------------------------
+    # Make required columns strings
+    # --------------------------------------------------------
+
+    df = df.with_columns([
+        pl.col("FunctionName")
+        .cast(pl.String, strict=False)
+        .fill_null("")
+        .str.strip_chars(),
+
+        pl.col("QAComment")
+        .cast(pl.String, strict=False)
+        .fill_null("")
+        .str.strip_chars(),
+    ])
+
+    # --------------------------------------------------------
+    # Normalize boolean columns
+    # --------------------------------------------------------
+
+    df = df.with_columns([
+        normalize_bool_expression("IsMultiValue")
+        .alias("_multi"),
+
+        normalize_bool_expression("HasBlankValue")
+        .alias("_blank"),
+    ])
+
+    # ========================================================
+    # QA COMMENT LOGIC
+    # ========================================================
+
+    # Packing:
+    #
+    # TRUE  + FALSE -> ok
+    # TRUE  + TRUE  -> null
+    # FALSE + FALSE -> conflict
+    # FALSE + TRUE  -> conflict
+    #
+    # Other:
+    #
+    # TRUE  + FALSE -> conflict
+    # TRUE  + TRUE  -> conflict
+    # FALSE + FALSE -> ok
+    # FALSE + TRUE  -> null
+
+    is_packing = (
+        pl.col("FunctionName")
+        .str.to_lowercase()
+        == "packing"
+    )
+
+    new_comment = (
+        pl.when(is_packing)
+        .then(
+            pl.when(
+                (pl.col("_multi") == "true")
+                & (pl.col("_blank") == "false")
+            )
+            .then(pl.lit("ok"))
+
+            .when(
+                (pl.col("_multi") == "true")
+                & (pl.col("_blank") == "true")
+            )
+            .then(pl.lit("null"))
+
+            .when(
+                (pl.col("_multi") == "false")
+                & (pl.col("_blank") == "false")
+            )
+            .then(pl.lit("conflict"))
+
+            .when(
+                (pl.col("_multi") == "false")
+                & (pl.col("_blank") == "true")
+            )
+            .then(pl.lit("conflict"))
+
+            .otherwise(
+                pl.col("QAComment")
+            )
+        )
+
+        .otherwise(
+            pl.when(
+                (pl.col("_multi") == "true")
+                & (pl.col("_blank") == "false")
+            )
+            .then(pl.lit("conflict"))
+
+            .when(
+                (pl.col("_multi") == "true")
+                & (pl.col("_blank") == "true")
+            )
+            .then(pl.lit("conflict"))
+
+            .when(
+                (pl.col("_multi") == "false")
+                & (pl.col("_blank") == "false")
+            )
+            .then(pl.lit("ok"))
+
+            .when(
+                (pl.col("_multi") == "false")
+                & (pl.col("_blank") == "true")
+            )
+            .then(pl.lit("null"))
+
+            .otherwise(
+                pl.col("QAComment")
+            )
+        )
+    )
+
+    df = df.with_columns(
+        new_comment.alias("QAComment")
+    )
+
+    # ========================================================
+    # CREATE LOOKUP
+    # ========================================================
+
+    df = df.with_columns(
+        pl.col("FunctionName")
+        .str.to_lowercase()
+        .str.strip_chars()
+        .alias("_lookup")
+    )
+
+    # ========================================================
+    # JOIN WITH REFERENCE
+    # ========================================================
+
+    df = df.join(
+        reference.select([
+            "_lookup",
+            "Action",
+            "Area",
+            "Group",
+            "Team leader",
+        ]),
+        on="_lookup",
+        how="left",
+    )
+
+    # --------------------------------------------------------
+    # Fill missing reference values
+    # --------------------------------------------------------
+
+    df = df.with_columns([
+        pl.col("Action")
+        .cast(pl.String, strict=False)
+        .fill_null("-")
+        .alias("Action"),
+
+        pl.col("Area")
+        .cast(pl.String, strict=False)
+        .fill_null("-")
+        .alias("Area"),
+
+        pl.col("Group")
+        .cast(pl.String, strict=False)
+        .fill_null("-")
+        .alias("Group"),
+
+        pl.col("Team leader")
+        .cast(pl.String, strict=False)
+        .fill_null("-")
+        .alias("Team leader"),
+    ])
+
+    # ========================================================
+    # REMOVE ANALYSIS
+    # ========================================================
+
+    df = df.filter(
+        pl.col("Action")
+        .str.to_lowercase()
+        != "analysis"
+    )
+
+    # ========================================================
+    # REMOVE OK
+    # ========================================================
+
+    df = df.filter(
+        pl.col("QAComment")
+        .str.to_lowercase()
+        != "ok"
+    )
+
+    # ========================================================
+    # FIRST COLUMNS
+    # ========================================================
+
+    first_columns = [
+        "FunctionName",
+        "Area",
+        "Group",
+        "Team leader",
+    ]
+
+    remaining_columns = [
+        col
+        for col in df.columns
+        if col not in first_columns
+        and col not in [
+            "_lookup",
+            "_multi",
+            "_blank",
+            "Action",
+        ]
+    ]
+
+    final_columns = first_columns + remaining_columns
+
+    df = df.select(final_columns)
+
+    # ========================================================
+    # SUMMARY
+    # ========================================================
+
+    summary = (
+        df
+        .group_by([
+            "Area",
+            "Team leader",
+            "QAComment",
+        ])
+        .agg(
+            pl.len().alias("Count")
+        )
+        .sort([
+            "Area",
+            "Team leader",
+            "QAComment",
+        ])
+    )
+
+    return df, summary
+
+
+# ============================================================
+# WRITE EXCEL
+# ============================================================
+
+def dataframe_to_excel(
+    df: pl.DataFrame,
+    sheet_name: str = "Output"
+) -> bytes:
+
+    output = io.BytesIO()
+
+    df.write_excel(
+        output,
+        worksheet=sheet_name,
+        autofit=False,
+    )
+
+    return output.getvalue()
+
+
+# ============================================================
+# CREATE ZIP
+# ============================================================
+
+def create_zip(files: list[tuple[str, bytes]]) -> bytes:
+
+    zip_buffer = io.BytesIO()
+
+    with zipfile.ZipFile(
+        zip_buffer,
+        mode="w",
+        compression=zipfile.ZIP_DEFLATED
+    ) as z:
+
+        for filename, content in files:
+            z.writestr(
+                filename,
+                content
+            )
+
+    return zip_buffer.getvalue()
+
+
+# ============================================================
+# UI
+# ============================================================
+
+st.title("✅ QA Comment Updater")
+
+st.write(
+    "Upload one or more Excel files to update QA Comments "
+    "using the Reference mapping."
+)
+
+
+# ============================================================
+# CHECK REFERENCE
 # ============================================================
 
 try:
 
-    reference_df = load_reference(
-        REFERENCE_FILE
-    )
+    reference_df = load_reference()
 
     st.success(
-        f"✅ Reference loaded successfully: "
-        f"{len(reference_df):,} rows"
+        f"Reference loaded successfully — "
+        f"{reference_df.height:,} functions"
     )
 
 except Exception as e:
 
-    st.error(
-        "❌ Cannot read reference.xlsx"
-    )
-
-    st.code(
-        str(e)
-    )
-
-    st.info(
-        "Make sure reference.xlsx is in the same GitHub "
-        "folder as qa_comment.py."
-    )
+    st.error(str(e))
 
     st.stop()
 
 
 # ============================================================
-# REFERENCE INFORMATION
-# ============================================================
-
-with st.expander("📚 Reference Information"):
-
-    st.write(
-        f"**Reference file:** `{REFERENCE_FILE.name}`"
-    )
-
-    st.write(
-        "**Reference columns:**"
-    )
-
-    st.write([
-        "FunctionName",
-        "Action",
-        "Area",
-        "Group",
-        "Team leader"
-    ])
-
-    preview_reference = reference_df[
-        [
-            "FunctionName",
-            "Action",
-            "Area",
-            "Group",
-            "Team leader"
-        ]
-    ].head(20)
-
-    st.dataframe(
-        preview_reference,
-        use_container_width=True,
-        hide_index=True
-    )
-
-
-# ============================================================
-# FILE UPLOADER
+# UPLOAD FILES
 # ============================================================
 
 uploaded_files = st.file_uploader(
-    "📤 Upload Excel file(s)",
-    type=["xlsx"],
-    accept_multiple_files=True
+    "Upload Input Excel File(s)",
+    type=["xlsx", "xls"],
+    accept_multiple_files=True,
 )
 
 
 # ============================================================
-# PROCESS FILES
+# PREVIEW OPTION
+# ============================================================
+
+show_preview = st.checkbox(
+    "Show preview after processing",
+    value=False
+)
+
+
+# ============================================================
+# PROCESS BUTTON
 # ============================================================
 
 if uploaded_files:
 
-    generated_files = []
-
-    summary_rows = []
-
     st.info(
-        f"📁 {len(uploaded_files)} file(s) uploaded."
+        f"{len(uploaded_files)} file(s) selected."
     )
 
-    # ========================================================
-    # PROCESS EACH FILE
-    # ========================================================
+    if st.button(
+        "🚀 Process Files",
+        type="primary",
+        use_container_width=True
+    ):
 
-    for uploaded_file in uploaded_files:
+        output_files = []
+        all_summaries = []
 
-        filename = uploaded_file.name
+        progress = st.progress(0)
 
-        st.markdown(
-            f"### 🔄 Processing: `{filename}`"
-        )
+        status = st.empty()
 
-        try:
+        total_files = len(uploaded_files)
 
-            # ==================================================
-            # READ INPUT EXCEL
-            # ==================================================
+        for index, uploaded_file in enumerate(
+            uploaded_files,
+            start=1
+        ):
 
-            file_bytes = uploaded_file.getvalue()
-
-            df = pd.read_excel(
-                io.BytesIO(file_bytes),
-                engine="openpyxl"
+            status.write(
+                f"Processing {index}/{total_files}: "
+                f"{uploaded_file.name}"
             )
 
-            # ==================================================
-            # CLEAN COLUMN NAMES
-            # ==================================================
+            try:
 
-            df.columns = [
-                clean_column_name(col)
-                for col in df.columns
-            ]
+                # --------------------------------------------
+                # PROCESS
+                # --------------------------------------------
 
-            # ==================================================
-            # NORMALIZE INPUT HEADERS
-            # ==================================================
-
-            input_header_mapping = {}
-
-            for col in df.columns:
-
-                normalized = normalize_header(col)
-
-                if normalized == "functionname":
-                    input_header_mapping[col] = "FunctionName"
-
-                elif normalized == "ismultivalue":
-                    input_header_mapping[col] = "IsMultiValue"
-
-                elif normalized == "hasblankvalue":
-                    input_header_mapping[col] = "HasBlankValue"
-
-                elif normalized == "qacomment":
-                    input_header_mapping[col] = "QAComment"
-
-                elif normalized == "action":
-                    input_header_mapping[col] = "Action"
-
-                elif normalized == "area":
-                    input_header_mapping[col] = "Area"
-
-                elif normalized == "group":
-                    input_header_mapping[col] = "Group"
-
-                elif normalized in [
-                    "teamleader",
-                    "team_leader"
-                ]:
-                    input_header_mapping[col] = "Team leader"
-
-            df = df.rename(
-                columns=input_header_mapping
-            )
-
-            # ==================================================
-            # REQUIRED INPUT COLUMNS
-            # ==================================================
-
-            required_input_columns = [
-                "FunctionName",
-                "IsMultiValue",
-                "HasBlankValue",
-                "QAComment"
-            ]
-
-            missing_input_columns = [
-                col
-                for col in required_input_columns
-                if col not in df.columns
-            ]
-
-            if missing_input_columns:
-
-                st.error(
-                    f"❌ `{filename}` skipped.\n\n"
-                    f"Missing columns: "
-                    f"{', '.join(missing_input_columns)}"
+                result_df, summary_df = process_file(
+                    uploaded_file,
+                    reference_df
                 )
 
-                continue
-
-            # ==================================================
-            # ORIGINAL ROW COUNT
-            # ==================================================
-
-            original_rows = len(df)
-
-            # ==================================================
-            # CLEAN INPUT VALUES
-            # ==================================================
-
-            df["FunctionName"] = (
-                df["FunctionName"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-            )
-
-            df["IsMultiValue"] = (
-                df["IsMultiValue"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .str.upper()
-            )
-
-            df["HasBlankValue"] = (
-                df["HasBlankValue"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .str.upper()
-            )
-
-            df["QAComment"] = (
-                df["QAComment"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .str.lower()
-            )
-
-            # ==================================================
-            # UPDATE QACOMMENT
-            # ==================================================
-
-            function_name = (
-                df["FunctionName"]
-                .str.lower()
-                .str.strip()
-            )
-
-            is_packing = (
-                function_name == "packing"
-            )
-
-            is_multi = df["IsMultiValue"]
-            has_blank = df["HasBlankValue"]
-
-            # --------------------------------------------------
-            # PACKING
-            # --------------------------------------------------
-
-            # TRUE + FALSE = OK
-
-            condition = (
-                is_packing
-                & (is_multi == "TRUE")
-                & (has_blank == "FALSE")
-            )
-
-            df.loc[
-                condition,
-                "QAComment"
-            ] = "ok"
-
-            # TRUE + TRUE = NULL
-
-            condition = (
-                is_packing
-                & (is_multi == "TRUE")
-                & (has_blank == "TRUE")
-            )
-
-            df.loc[
-                condition,
-                "QAComment"
-            ] = "null"
-
-            # FALSE + FALSE = CONFLICT
-
-            condition = (
-                is_packing
-                & (is_multi == "FALSE")
-                & (has_blank == "FALSE")
-            )
-
-            df.loc[
-                condition,
-                "QAComment"
-            ] = "conflict"
-
-            # FALSE + TRUE = CONFLICT
-
-            condition = (
-                is_packing
-                & (is_multi == "FALSE")
-                & (has_blank == "TRUE")
-            )
-
-            df.loc[
-                condition,
-                "QAComment"
-            ] = "conflict"
-
-            # --------------------------------------------------
-            # OTHER FUNCTIONS
-            # --------------------------------------------------
-
-            not_packing = (
-                function_name != "packing"
-            )
-
-            # TRUE + FALSE = CONFLICT
-
-            condition = (
-                not_packing
-                & (is_multi == "TRUE")
-                & (has_blank == "FALSE")
-            )
-
-            df.loc[
-                condition,
-                "QAComment"
-            ] = "conflict"
-
-            # TRUE + TRUE = CONFLICT
-
-            condition = (
-                not_packing
-                & (is_multi == "TRUE")
-                & (has_blank == "TRUE")
-            )
-
-            df.loc[
-                condition,
-                "QAComment"
-            ] = "conflict"
-
-            # FALSE + FALSE = OK
-
-            condition = (
-                not_packing
-                & (is_multi == "FALSE")
-                & (has_blank == "FALSE")
-            )
-
-            df.loc[
-                condition,
-                "QAComment"
-            ] = "ok"
-
-            # FALSE + TRUE = NULL
-
-            condition = (
-                not_packing
-                & (is_multi == "FALSE")
-                & (has_blank == "TRUE")
-            )
-
-            df.loc[
-                condition,
-                "QAComment"
-            ] = "null"
-
-            # ==================================================
-            # CREATE LOOKUP KEY
-            # ==================================================
-
-            df["_lookup"] = (
-                df["FunctionName"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .str.lower()
-            )
-
-            # ==================================================
-            # REMOVE OLD REFERENCE COLUMNS
-            # ==================================================
-
-            old_reference_columns = [
-                "Action",
-                "Area",
-                "Group",
-                "Team leader"
-            ]
-
-            columns_to_drop = [
-                col
-                for col in old_reference_columns
-                if col in df.columns
-            ]
-
-            if columns_to_drop:
-
-                df = df.drop(
-                    columns=columns_to_drop
-                )
-
-            # ==================================================
-            # PREPARE REFERENCE FOR MERGE
-            # ==================================================
-
-            reference_for_merge = reference_df[
-                [
-                    "_lookup",
-                    "Action",
-                    "Area",
-                    "Group",
-                    "Team leader"
-                ]
-            ].copy()
-
-            # ==================================================
-            # MERGE INPUT WITH REFERENCE
-            # ==================================================
-
-            df = df.merge(
-                reference_for_merge,
-                on="_lookup",
-                how="left"
-            )
-
-            # ==================================================
-            # REMOVE LOOKUP COLUMN
-            # ==================================================
-
-            df = df.drop(
-                columns=["_lookup"]
-            )
-
-            # ==================================================
-            # FILL MISSING REFERENCE VALUES
-            # ==================================================
-
-            for col in [
-                "Action",
-                "Area",
-                "Group",
-                "Team leader"
-            ]:
-
-                if col not in df.columns:
-
-                    df[col] = "-"
-
-                else:
-
-                    df[col] = (
-                        df[col]
-                        .fillna("-")
-                        .astype(str)
-                        .str.strip()
-                    )
-
-                    df.loc[
-                        df[col].isin(
-                            ["", "nan", "None"]
-                        ),
-                        col
-                    ] = "-"
-
-            # ==================================================
-            # REORDER COLUMNS
-            # ==================================================
-
-            first_columns = [
-                "FunctionName",
-                "Area",
-                "Group",
-                "Team leader"
-            ]
-
-            remaining_columns = [
-                col
-                for col in df.columns
-                if col not in first_columns
-            ]
-
-            df = df[
-                first_columns
-                + remaining_columns
-            ]
-
-            # ==================================================
-            # REMOVE ACTION = ANALYSIS
-            # ==================================================
-
-            before_analysis = len(df)
-
-            action_normalized = (
-                df["Action"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .str.lower()
-            )
-
-            df = df[
-                action_normalized != "analysis"
-            ].copy()
-
-            removed_analysis = (
-                before_analysis
-                - len(df)
-            )
-
-            # ==================================================
-            # REMOVE QACOMMENT = OK
-            # ==================================================
-
-            before_ok = len(df)
-
-            qa_normalized = (
-                df["QAComment"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .str.lower()
-            )
-
-            df = df[
-                qa_normalized != "ok"
-            ].copy()
-
-            removed_ok = (
-                before_ok
-                - len(df)
-            )
-
-            # ==================================================
-            # BUILD SUMMARY
-            # ==================================================
-
-            if len(df) > 0:
-
-                summary_df = df[
-                    df["QAComment"]
-                    .fillna("")
-                    .astype(str)
-                    .str.strip()
-                    .str.lower()
-                    .isin(
-                        [
-                            "conflict",
-                            "null"
-                        ]
-                    )
-                ].copy()
-
-                if len(summary_df) > 0:
-
-                    temp_summary = (
-                        summary_df
-                        .groupby(
-                            [
-                                "Area",
-                                "Team leader"
-                            ],
-                            dropna=False
-                        )
-                        .size()
-                        .reset_index(
-                            name="Counts"
-                        )
-                    )
-
-                    for _, row in temp_summary.iterrows():
-
-                        summary_rows.append(
-                            {
-                                "Area": str(
-                                    row["Area"]
-                                ),
-                                "Counts": int(
-                                    row["Counts"]
-                                ),
-                                "Team Leader": str(
-                                    row["Team leader"]
-                                )
-                            }
-                        )
-
-            # ==================================================
-            # OUTPUT FILE NAME
-            # ==================================================
-
-            if filename.lower().endswith(".xlsx"):
+                # --------------------------------------------
+                # OUTPUT FILE NAME
+                # --------------------------------------------
+
+                original_name = Path(
+                    uploaded_file.name
+                ).stem
 
                 output_name = (
-                    filename[:-5]
-                    + "_Updated.xlsx"
+                    f"{original_name}_Updated.xlsx"
+                )
+
+                # --------------------------------------------
+                # WRITE EXCEL
+                # --------------------------------------------
+
+                excel_bytes = dataframe_to_excel(
+                    result_df,
+                    "Output"
+                )
+
+                output_files.append(
+                    (
+                        output_name,
+                        excel_bytes
+                    )
+                )
+
+                # --------------------------------------------
+                # ADD FILE NAME TO SUMMARY
+                # --------------------------------------------
+
+                summary_df = summary_df.with_columns(
+                    pl.lit(uploaded_file.name)
+                    .alias("Source File")
+                )
+
+                all_summaries.append(
+                    summary_df
+                )
+
+                # --------------------------------------------
+                # PREVIEW ONLY IF REQUESTED
+                # --------------------------------------------
+
+                if show_preview:
+
+                    with st.expander(
+                        f"Preview: {uploaded_file.name}"
+                    ):
+
+                        st.dataframe(
+                            result_df
+                            .head(100)
+                            .to_dicts(),
+                            use_container_width=True
+                        )
+
+                        st.write(
+                            f"Rows in output: "
+                            f"{result_df.height:,}"
+                        )
+
+            except Exception as e:
+
+                st.error(
+                    f"❌ Error processing "
+                    f"'{uploaded_file.name}':\n\n{e}"
+                )
+
+            progress.progress(
+                index / total_files
+            )
+
+        status.empty()
+
+        # ====================================================
+        # SUMMARY
+        # ====================================================
+
+        if all_summaries:
+
+            final_summary = pl.concat(
+                all_summaries,
+                how="diagonal"
+            )
+
+            # Put Source File first
+            summary_columns = [
+                "Source File",
+                "Area",
+                "Team leader",
+                "QAComment",
+                "Count",
+            ]
+
+            final_summary = final_summary.select(
+                [
+                    col
+                    for col in summary_columns
+                    if col in final_summary.columns
+                ]
+            )
+
+            summary_bytes = dataframe_to_excel(
+                final_summary,
+                "Summary"
+            )
+
+            st.success(
+                f"✅ Finished processing "
+                f"{len(output_files)} file(s)"
+            )
+
+            # =================================================
+            # DOWNLOAD OUTPUTS
+            # =================================================
+
+            if len(output_files) == 1:
+
+                filename, content = output_files[0]
+
+                st.download_button(
+                    label=f"⬇️ Download {filename}",
+                    data=content,
+                    file_name=filename,
+                    mime=(
+                        "application/vnd.openxmlformats-"
+                        "officedocument.spreadsheetml.sheet"
+                    ),
+                    use_container_width=True,
                 )
 
             else:
 
-                output_name = (
-                    filename
-                    + "_Updated.xlsx"
+                zip_bytes = create_zip(
+                    output_files
                 )
 
-            # ==================================================
-            # WRITE OUTPUT EXCEL
-            # ==================================================
-
-            output_buffer = io.BytesIO()
-
-            with pd.ExcelWriter(
-                output_buffer,
-                engine="xlsxwriter"
-            ) as writer:
-
-                df.to_excel(
-                    writer,
-                    index=False,
-                    sheet_name="Output"
-                )
-
-            output_buffer.seek(0)
-
-            # ==================================================
-            # STORE OUTPUT
-            # ==================================================
-
-            generated_files.append(
-                {
-                    "name": output_name,
-                    "data": output_buffer.getvalue()
-                }
-            )
-
-            # ==================================================
-            # SUCCESS
-            # ==================================================
-
-            st.success(
-                f"✅ Created `{output_name}`"
-            )
-
-            # ==================================================
-            # STATISTICS
-            # ==================================================
-
-            c1, c2, c3, c4 = st.columns(4)
-
-            c1.metric(
-                "Original Rows",
-                f"{original_rows:,}"
-            )
-
-            c2.metric(
-                "Analysis Removed",
-                f"{removed_analysis:,}"
-            )
-
-            c3.metric(
-                "OK Removed",
-                f"{removed_ok:,}"
-            )
-
-            c4.metric(
-                "Final Rows",
-                f"{len(df):,}"
-            )
-
-            # ==================================================
-            # PREVIEW
-            # ==================================================
-
-            with st.expander(
-                f"👀 Preview - {output_name}"
-            ):
-
-                st.dataframe(
-                    df.head(100),
+                st.download_button(
+                    label="🗜️ Download All Updated Files (ZIP)",
+                    data=zip_bytes,
+                    file_name="QA_Updated_Files.zip",
+                    mime="application/zip",
                     use_container_width=True,
-                    hide_index=True
                 )
 
-        # ======================================================
-        # ERROR FOR CURRENT FILE
-        # ======================================================
+                st.subheader("Individual Files")
 
-        except Exception as e:
+                for filename, content in output_files:
 
-            st.error(
-                f"❌ Error processing `{filename}`"
-            )
+                    st.download_button(
+                        label=f"⬇️ {filename}",
+                        data=content,
+                        file_name=filename,
+                        mime=(
+                            "application/vnd.openxmlformats-"
+                            "officedocument.spreadsheetml.sheet"
+                        ),
+                        key=f"download_{filename}",
+                    )
 
-            st.exception(e)
+            # =================================================
+            # SUMMARY DOWNLOAD
+            # =================================================
 
-
-    # ========================================================
-    # FINAL SUMMARY
-    # ========================================================
-
-    st.divider()
-
-    st.header(
-        "📋 FINAL SUMMARY"
-    )
-
-    if summary_rows:
-
-        final_summary = pd.DataFrame(
-            summary_rows
-        )
-
-        final_summary = (
-            final_summary
-            .groupby(
-                [
-                    "Area",
-                    "Team Leader"
-                ],
-                as_index=False
-            )["Counts"]
-            .sum()
-        )
-
-        final_summary = final_summary[
-            [
-                "Area",
-                "Counts",
-                "Team Leader"
-            ]
-        ]
-
-        final_summary = (
-            final_summary
-            .sort_values(
-                "Counts",
-                ascending=False
-            )
-            .reset_index(drop=True)
-        )
-
-    else:
-
-        final_summary = pd.DataFrame(
-            columns=[
-                "Area",
-                "Counts",
-                "Team Leader"
-            ]
-        )
-
-    # ========================================================
-    # DISPLAY SUMMARY
-    # ========================================================
-
-    if len(final_summary) > 0:
-
-        st.dataframe(
-            final_summary,
-            use_container_width=True,
-            hide_index=True
-        )
-
-    else:
-
-        st.info(
-            "ℹ️ No Conflict or Null rows were found."
-        )
-
-    # ========================================================
-    # DOWNLOAD SUMMARY
-    # ========================================================
-
-    summary_buffer = io.BytesIO()
-
-    with pd.ExcelWriter(
-        summary_buffer,
-        engine="xlsxwriter"
-    ) as writer:
-
-        final_summary.to_excel(
-            writer,
-            index=False,
-            sheet_name="Summary"
-        )
-
-    summary_buffer.seek(0)
-
-    st.download_button(
-        label="📥 Download Summary Excel",
-        data=summary_buffer.getvalue(),
-        file_name="QA_Summary.xlsx",
-        mime=(
-            "application/vnd.openxmlformats-"
-            "officedocument.spreadsheetml.sheet"
-        ),
-        key="download_summary"
-    )
-
-    # ========================================================
-    # DOWNLOAD OUTPUT FILES
-    # ========================================================
-
-    st.divider()
-
-    st.header(
-        "📥 DOWNLOAD OUTPUT FILES"
-    )
-
-    # --------------------------------------------------------
-    # One file
-    # --------------------------------------------------------
-
-    if len(generated_files) == 1:
-
-        file_info = generated_files[0]
-
-        st.download_button(
-            label="⬇️ Download Updated Excel",
-            data=file_info["data"],
-            file_name=file_info["name"],
-            mime=(
-                "application/vnd.openxmlformats-"
-                "officedocument.spreadsheetml.sheet"
-            ),
-            key="download_single"
-        )
-
-    # --------------------------------------------------------
-    # Multiple files
-    # --------------------------------------------------------
-
-    elif len(generated_files) > 1:
-
-        zip_buffer = io.BytesIO()
-
-        with zipfile.ZipFile(
-            zip_buffer,
-            "w",
-            zipfile.ZIP_DEFLATED
-        ) as zip_file:
-
-            for file_info in generated_files:
-
-                zip_file.writestr(
-                    file_info["name"],
-                    file_info["data"]
-                )
-
-        zip_buffer.seek(0)
-
-        st.download_button(
-            label="📦 Download All Files (ZIP)",
-            data=zip_buffer.getvalue(),
-            file_name="Updated_Output_Files.zip",
-            mime="application/zip",
-            key="download_zip"
-        )
-
-        st.write(
-            "### Individual Files"
-        )
-
-        for index, file_info in enumerate(
-            generated_files
-        ):
+            st.subheader("📊 QA Summary")
 
             st.download_button(
-                label=(
-                    f"⬇️ {file_info['name']}"
-                ),
-                data=file_info["data"],
-                file_name=file_info["name"],
+                label="⬇️ Download QA Summary",
+                data=summary_bytes,
+                file_name="QA_Summary.xlsx",
                 mime=(
                     "application/vnd.openxmlformats-"
                     "officedocument.spreadsheetml.sheet"
                 ),
-                key=f"download_file_{index}"
+                use_container_width=True,
             )
 
-    # --------------------------------------------------------
-    # No files
-    # --------------------------------------------------------
+            # Show summary only
+            st.dataframe(
+                final_summary.to_dicts(),
+                use_container_width=True
+            )
 
-    else:
+        else:
 
-        st.warning(
-            "⚠️ No files were generated."
-        )
-
-    # ========================================================
-    # FINISHED
-    # ========================================================
-
-    if generated_files:
-
-        st.success(
-            "🎉 Finished Successfully!"
-        )
+            st.warning(
+                "No files were processed successfully."
+            )
