@@ -1,8 +1,3 @@
-# ============================================================
-# STREAMLIT APP
-# QA COMMENT UPDATER + REFERENCE MAPPING + SUMMARY
-# ============================================================
-
 import streamlit as st
 import polars as pl
 import io
@@ -28,25 +23,30 @@ st.title("📊 QA Comment Updater")
 
 st.write(
     "Upload one or more Excel files to update QAComment, "
-    "add Area / Group / Team leader, remove Analysis and OK rows, "
-    "and generate a consolidated summary."
+    "add Area / Group / Team leader from reference.csv, "
+    "remove Analysis and OK rows, and generate a summary."
 )
 
 
 # ============================================================
-# LOAD REFERENCE.CSV
+# LOAD REFERENCE CSV
 # ============================================================
 
 @st.cache_data
 def load_reference():
 
-    reference_df = pl.read_csv(
+    reference = pl.read_csv(
         "reference.csv",
-        infer_schema_length=None,
-        ignore_errors=False
+        infer_schema_length=None
     )
 
-    required_reference_columns = [
+    # Clean column names
+    reference = reference.rename({
+        col: col.strip()
+        for col in reference.columns
+    })
+
+    required = [
         "FunctionName",
         "Action",
         "Area",
@@ -54,78 +54,69 @@ def load_reference():
         "Team leader"
     ]
 
-    missing_reference_columns = [
-        c
-        for c in required_reference_columns
-        if c not in reference_df.columns
+    missing = [
+        col
+        for col in required
+        if col not in reference.columns
     ]
 
-    if missing_reference_columns:
-
+    if missing:
         raise ValueError(
-            "reference.csv is missing required columns: "
-            + ", ".join(missing_reference_columns)
+            "Missing columns in reference.csv: "
+            + ", ".join(missing)
         )
 
-    # --------------------------------------------------------
-    # Clean Reference
-    # --------------------------------------------------------
-
-    reference_df = reference_df.with_columns([
-
+    # Convert everything used in mapping to strings
+    reference = reference.with_columns([
         pl.col("FunctionName")
-        .cast(pl.Utf8, strict=False)
+        .cast(pl.String, strict=False)
         .fill_null("")
         .str.strip_chars()
         .str.to_lowercase()
-        .alias("FunctionName_lookup"),
+        .alias("_lookup"),
 
         pl.col("Action")
-        .cast(pl.Utf8, strict=False)
+        .cast(pl.String, strict=False)
         .fill_null("")
         .str.strip_chars(),
 
         pl.col("Area")
-        .cast(pl.Utf8, strict=False)
+        .cast(pl.String, strict=False)
         .fill_null("")
         .str.strip_chars(),
 
         pl.col("Group")
-        .cast(pl.Utf8, strict=False)
+        .cast(pl.String, strict=False)
         .fill_null("")
         .str.strip_chars(),
 
         pl.col("Team leader")
-        .cast(pl.Utf8, strict=False)
+        .cast(pl.String, strict=False)
         .fill_null("")
-        .str.strip_chars()
+        .str.strip_chars(),
     ])
 
-    # --------------------------------------------------------
-    # Keep only required mapping columns
-    # --------------------------------------------------------
-
-    mapping_df = reference_df.select([
-        "FunctionName_lookup",
+    # Only keep mapping columns
+    reference = reference.select([
+        "_lookup",
         "Action",
         "Area",
         "Group",
         "Team leader"
     ])
 
-    # --------------------------------------------------------
-    # Remove duplicate FunctionName mappings
-    #
-    # This prevents duplicate rows after JOIN if the same
-    # FunctionName appears more than once in reference.csv.
-    # --------------------------------------------------------
+    # Remove empty FunctionName
+    reference = reference.filter(
+        pl.col("_lookup") != ""
+    )
 
-    mapping_df = mapping_df.unique(
-        subset=["FunctionName_lookup"],
+    # Make sure one FunctionName has one mapping
+    reference = reference.unique(
+        subset=["_lookup"],
         keep="first"
     )
 
-    return mapping_df
+    return reference
 
 
 # ============================================================
@@ -134,17 +125,32 @@ def load_reference():
 
 try:
 
-    mapping_df = load_reference()
+    reference_df = load_reference()
 
 except Exception as e:
 
-    st.error(
-        "❌ Could not load reference.csv"
-    )
+    st.error("❌ Error loading reference.csv")
 
-    st.exception(e)
+    st.code(str(e))
 
     st.stop()
+
+
+# ============================================================
+# SHOW REFERENCE STATUS
+# ============================================================
+
+with st.expander("📚 Reference Status"):
+
+    st.write(
+        f"Reference rows: **{reference_df.height:,}**"
+    )
+
+    st.write(
+        "Reference columns:"
+    )
+
+    st.write(reference_df.columns)
 
 
 # ============================================================
@@ -166,22 +172,22 @@ if uploaded_files:
 
     generated_files = []
 
-    all_summary_rows = []
+    summary_rows = []
 
     st.info(
-        f"{len(uploaded_files)} file(s) uploaded."
+        f"📁 {len(uploaded_files)} file(s) uploaded."
     )
 
 
     # ========================================================
-    # PROCESS EACH FILE
+    # EACH FILE
     # ========================================================
 
     for uploaded_file in uploaded_files:
 
         filename = uploaded_file.name
 
-        st.write(
+        st.markdown(
             f"### 🔄 Processing: `{filename}`"
         )
 
@@ -191,73 +197,84 @@ if uploaded_files:
             # READ EXCEL
             # ==================================================
 
-            file_bytes = uploaded_file.getvalue()
+            data = uploaded_file.getvalue()
 
             df = pl.read_excel(
-                io.BytesIO(file_bytes),
+                io.BytesIO(data),
                 infer_schema_length=None
             )
 
+
             # ==================================================
-            # REQUIRED COLUMNS
+            # CLEAN COLUMN NAMES
             # ==================================================
 
-            required_columns = [
+            df = df.rename({
+                col: col.strip()
+                for col in df.columns
+            })
+
+
+            # ==================================================
+            # REQUIRED INPUT COLUMNS
+            # ==================================================
+
+            required_input = [
                 "FunctionName",
                 "IsMultiValue",
                 "HasBlankValue",
                 "QAComment"
             ]
 
-            missing_columns = [
-                c
-                for c in required_columns
-                if c not in df.columns
+            missing_input = [
+                col
+                for col in required_input
+                if col not in df.columns
             ]
 
-            if missing_columns:
+            if missing_input:
 
                 st.error(
-                    f"❌ Skipping `{filename}`. "
+                    f"❌ `{filename}` skipped. "
                     f"Missing columns: "
-                    f"{', '.join(missing_columns)}"
+                    f"{', '.join(missing_input)}"
                 )
 
                 continue
 
 
             # ==================================================
-            # ORIGINAL ROW COUNT
+            # ORIGINAL ROWS
             # ==================================================
 
-            original_count = df.height
+            original_rows = df.height
 
 
             # ==================================================
-            # CLEAN INPUT DATA
+            # CLEAN INPUT COLUMNS
             # ==================================================
 
             df = df.with_columns([
 
                 pl.col("FunctionName")
-                .cast(pl.Utf8, strict=False)
+                .cast(pl.String, strict=False)
                 .fill_null("")
                 .str.strip_chars(),
 
                 pl.col("IsMultiValue")
-                .cast(pl.Utf8, strict=False)
+                .cast(pl.String, strict=False)
                 .fill_null("")
                 .str.strip_chars()
                 .str.to_uppercase(),
 
                 pl.col("HasBlankValue")
-                .cast(pl.Utf8, strict=False)
+                .cast(pl.String, strict=False)
                 .fill_null("")
                 .str.strip_chars()
                 .str.to_uppercase(),
 
                 pl.col("QAComment")
-                .cast(pl.Utf8, strict=False)
+                .cast(pl.String, strict=False)
                 .fill_null("")
                 .str.strip_chars()
                 .str.to_lowercase()
@@ -268,118 +285,73 @@ if uploaded_files:
             # UPDATE QACOMMENT
             # ==================================================
 
-            function_name = (
+            fn = (
                 pl.col("FunctionName")
                 .str.to_lowercase()
             )
 
+            multi = pl.col("IsMultiValue")
+
+            blank = pl.col("HasBlankValue")
+
+
             df = df.with_columns(
 
-                # ------------------------------------------------
-                # PACKING
-                # TRUE + FALSE = OK
-                # ------------------------------------------------
-
                 pl.when(
-                    (function_name == "packing")
-                    &
-                    (pl.col("IsMultiValue") == "TRUE")
-                    &
-                    (pl.col("HasBlankValue") == "FALSE")
+                    (fn == "packing")
+                    & (multi == "TRUE")
+                    & (blank == "FALSE")
                 )
                 .then(pl.lit("ok"))
 
-                # ------------------------------------------------
-                # PACKING
-                # TRUE + TRUE = NULL
-                # ------------------------------------------------
-
                 .when(
-                    (function_name == "packing")
-                    &
-                    (pl.col("IsMultiValue") == "TRUE")
-                    &
-                    (pl.col("HasBlankValue") == "TRUE")
+                    (fn == "packing")
+                    & (multi == "TRUE")
+                    & (blank == "TRUE")
                 )
                 .then(pl.lit("null"))
 
-                # ------------------------------------------------
-                # PACKING
-                # FALSE + FALSE = CONFLICT
-                # ------------------------------------------------
-
                 .when(
-                    (function_name == "packing")
-                    &
-                    (pl.col("IsMultiValue") == "FALSE")
-                    &
-                    (pl.col("HasBlankValue") == "FALSE")
+                    (fn == "packing")
+                    & (multi == "FALSE")
+                    & (blank == "FALSE")
                 )
                 .then(pl.lit("conflict"))
 
-                # ------------------------------------------------
-                # PACKING
-                # FALSE + TRUE = CONFLICT
-                # ------------------------------------------------
-
                 .when(
-                    (function_name == "packing")
-                    &
-                    (pl.col("IsMultiValue") == "FALSE")
-                    &
-                    (pl.col("HasBlankValue") == "TRUE")
+                    (fn == "packing")
+                    & (multi == "FALSE")
+                    & (blank == "TRUE")
                 )
                 .then(pl.lit("conflict"))
 
-                # =================================================
-                # OTHER FUNCTIONS
-                # =================================================
-
-                # TRUE + FALSE = CONFLICT
-
                 .when(
-                    (function_name != "packing")
-                    &
-                    (pl.col("IsMultiValue") == "TRUE")
-                    &
-                    (pl.col("HasBlankValue") == "FALSE")
+                    (fn != "packing")
+                    & (multi == "TRUE")
+                    & (blank == "FALSE")
                 )
                 .then(pl.lit("conflict"))
 
-                # TRUE + TRUE = CONFLICT
-
                 .when(
-                    (function_name != "packing")
-                    &
-                    (pl.col("IsMultiValue") == "TRUE")
-                    &
-                    (pl.col("HasBlankValue") == "TRUE")
+                    (fn != "packing")
+                    & (multi == "TRUE")
+                    & (blank == "TRUE")
                 )
                 .then(pl.lit("conflict"))
 
-                # FALSE + FALSE = OK
-
                 .when(
-                    (function_name != "packing")
-                    &
-                    (pl.col("IsMultiValue") == "FALSE")
-                    &
-                    (pl.col("HasBlankValue") == "FALSE")
+                    (fn != "packing")
+                    & (multi == "FALSE")
+                    & (blank == "FALSE")
                 )
                 .then(pl.lit("ok"))
 
-                # FALSE + TRUE = NULL
-
                 .when(
-                    (function_name != "packing")
-                    &
-                    (pl.col("IsMultiValue") == "FALSE")
-                    &
-                    (pl.col("HasBlankValue") == "TRUE")
+                    (fn != "packing")
+                    & (multi == "FALSE")
+                    & (blank == "TRUE")
                 )
                 .then(pl.lit("null"))
-
-                # KEEP ORIGINAL
 
                 .otherwise(
                     pl.col("QAComment")
@@ -390,60 +362,76 @@ if uploaded_files:
 
 
             # ==================================================
-            # CREATE LOOKUP COLUMN
+            # CREATE LOOKUP
             # ==================================================
 
             df = df.with_columns(
 
                 pl.col("FunctionName")
-                .cast(pl.Utf8, strict=False)
+                .cast(pl.String, strict=False)
                 .fill_null("")
                 .str.strip_chars()
                 .str.to_lowercase()
-                .alias("FunctionName_lookup")
+                .alias("_lookup")
             )
 
 
             # ==================================================
-            # JOIN WITH REFERENCE
+            # REMOVE OLD REFERENCE COLUMNS IF THEY EXIST
+            # ==================================================
+
+            columns_to_remove = [
+                col
+                for col in [
+                    "Action",
+                    "Area",
+                    "Group",
+                    "Team leader"
+                ]
+                if col in df.columns
+            ]
+
+            if columns_to_remove:
+
+                df = df.drop(
+                    columns_to_remove
+                )
+
+
+            # ==================================================
+            # JOIN REFERENCE
             # ==================================================
 
             df = df.join(
-                mapping_df,
-                on="FunctionName_lookup",
+                reference_df,
+                on="_lookup",
                 how="left"
             )
 
 
             # ==================================================
-            # REMOVE TEMP COLUMN
+            # REMOVE LOOKUP
             # ==================================================
 
-            df = df.drop(
-                "FunctionName_lookup"
-            )
+            df = df.drop("_lookup")
 
 
             # ==================================================
-            # FILL MISSING REFERENCE VALUES
+            # FILL REFERENCE NULLS
             # ==================================================
 
             df = df.with_columns([
 
                 pl.col("Action")
-                .cast(pl.Utf8, strict=False)
                 .fill_null("-"),
 
                 pl.col("Area")
-                .cast(pl.Utf8, strict=False)
                 .fill_null("-"),
 
                 pl.col("Group")
-                .cast(pl.Utf8, strict=False)
                 .fill_null("-"),
 
                 pl.col("Team leader")
-                .cast(pl.Utf8, strict=False)
                 .fill_null("-")
             ])
 
@@ -452,26 +440,26 @@ if uploaded_files:
             # REORDER COLUMNS
             # ==================================================
 
-            first_columns = [
+            preferred = [
                 "FunctionName",
                 "Area",
                 "Group",
                 "Team leader"
             ]
 
-            remaining_columns = [
-                c
-                for c in df.columns
-                if c not in first_columns
+            remaining = [
+                col
+                for col in df.columns
+                if col not in preferred
             ]
 
             df = df.select(
-                first_columns + remaining_columns
+                preferred + remaining
             )
 
 
             # ==================================================
-            # REMOVE ACTION = ANALYSIS
+            # REMOVE ANALYSIS
             # ==================================================
 
             before_analysis = df.height
@@ -479,7 +467,7 @@ if uploaded_files:
             df = df.filter(
 
                 pl.col("Action")
-                .cast(pl.Utf8, strict=False)
+                .cast(pl.String, strict=False)
                 .fill_null("")
                 .str.strip_chars()
                 .str.to_lowercase()
@@ -492,7 +480,7 @@ if uploaded_files:
 
 
             # ==================================================
-            # REMOVE QACOMMENT = OK
+            # REMOVE OK
             # ==================================================
 
             before_ok = df.height
@@ -500,7 +488,7 @@ if uploaded_files:
             df = df.filter(
 
                 pl.col("QAComment")
-                .cast(pl.Utf8, strict=False)
+                .cast(pl.String, strict=False)
                 .fill_null("")
                 .str.strip_chars()
                 .str.to_lowercase()
@@ -513,20 +501,17 @@ if uploaded_files:
 
 
             # ==================================================
-            # SUMMARY DATA
+            # SUMMARY
             # ==================================================
 
             if df.height > 0:
 
-                summary_df = (
+                temp_summary = (
 
                     df
 
                     .filter(
                         pl.col("QAComment")
-                        .cast(pl.Utf8, strict=False)
-                        .fill_null("")
-                        .str.to_lowercase()
                         .is_in([
                             "conflict",
                             "null"
@@ -543,62 +528,48 @@ if uploaded_files:
                     )
                 )
 
-
-                for row in summary_df.iter_rows(
+                for row in temp_summary.iter_rows(
                     named=True
                 ):
 
-                    all_summary_rows.append({
+                    summary_rows.append({
 
                         "Area":
-                            row["Area"],
+                            str(row["Area"]),
 
                         "Counts":
-                            row["Counts"],
+                            int(row["Counts"]),
 
                         "Team Leader":
-                            row["Team leader"]
+                            str(row["Team leader"])
                     })
 
 
             # ==================================================
-            # OUTPUT FILE NAME
+            # OUTPUT FILE
             # ==================================================
 
-            if filename.lower().endswith(".xlsx"):
-
-                output_name = (
-                    filename[:-5]
-                    + "_Updated.xlsx"
-                )
-
-            else:
-
-                output_name = (
-                    filename
-                    + "_Updated.xlsx"
-                )
+            output_name = (
+                filename.rsplit(".", 1)[0]
+                + "_Updated.xlsx"
+            )
 
 
             # ==================================================
-            # WRITE EXCEL TO MEMORY
+            # WRITE EXCEL
             # ==================================================
 
-            output_buffer = io.BytesIO()
+            output = io.BytesIO()
 
             df.write_excel(
-                output_buffer
+                output
             )
 
-            output_buffer.seek(0)
-
-            output_bytes = (
-                output_buffer.getvalue()
-            )
+            output.seek(0)
 
 
             # ==================================================
-            # SAVE OUTPUT IN MEMORY
+            # STORE OUTPUT
             # ==================================================
 
             generated_files.append({
@@ -607,7 +578,7 @@ if uploaded_files:
                     output_name,
 
                 "data":
-                    output_bytes
+                    output.getvalue()
             })
 
 
@@ -616,7 +587,7 @@ if uploaded_files:
             # ==================================================
 
             st.success(
-                f"✅ Created: `{output_name}`"
+                f"✅ `{output_name}` created successfully."
             )
 
 
@@ -624,35 +595,27 @@ if uploaded_files:
             # STATISTICS
             # ==================================================
 
-            col1, col2, col3, col4 = st.columns(4)
+            c1, c2, c3, c4 = st.columns(4)
 
-            with col1:
+            c1.metric(
+                "Original Rows",
+                original_rows
+            )
 
-                st.metric(
-                    "Original Rows",
-                    original_count
-                )
+            c2.metric(
+                "Analysis Removed",
+                removed_analysis
+            )
 
-            with col2:
+            c3.metric(
+                "OK Removed",
+                removed_ok
+            )
 
-                st.metric(
-                    "Analysis Removed",
-                    removed_analysis
-                )
-
-            with col3:
-
-                st.metric(
-                    "OK Removed",
-                    removed_ok
-                )
-
-            with col4:
-
-                st.metric(
-                    "Final Rows",
-                    df.height
-                )
+            c4.metric(
+                "Final Rows",
+                df.height
+            )
 
 
             # ==================================================
@@ -673,14 +636,12 @@ if uploaded_files:
         except Exception as e:
 
             st.error(
-                f"❌ Error processing `{filename}`: {str(e)}"
+                f"❌ Error processing `{filename}`"
             )
 
-            with st.expander(
-                "🔎 Show technical error"
-            ):
-
-                st.exception(e)
+            st.code(
+                str(e)
+            )
 
 
     # ========================================================
@@ -694,17 +655,12 @@ if uploaded_files:
     )
 
 
-    if all_summary_rows:
+    if summary_rows:
 
         final_summary = pl.DataFrame(
-            all_summary_rows,
+            summary_rows,
             orient="row"
         )
-
-
-        # ----------------------------------------------------
-        # Combine same Area + Team Leader
-        # ----------------------------------------------------
 
         final_summary = (
 
@@ -723,34 +679,39 @@ if uploaded_files:
                 "Counts",
                 descending=True
             )
+
+            .select([
+                "Area",
+                "Counts",
+                "Team Leader"
+            ])
         )
-
-
-        final_summary = final_summary.select([
-
-            "Area",
-            "Counts",
-            "Team Leader"
-        ])
-
 
     else:
 
         final_summary = pl.DataFrame({
+            "Area": pl.Series(
+                "Area",
+                [],
+                dtype=pl.String
+            ),
 
-            "Area":
-                pl.Series([], dtype=pl.Utf8),
+            "Counts": pl.Series(
+                "Counts",
+                [],
+                dtype=pl.Int64
+            ),
 
-            "Counts":
-                pl.Series([], dtype=pl.Int64),
-
-            "Team Leader":
-                pl.Series([], dtype=pl.Utf8)
+            "Team Leader": pl.Series(
+                "Team Leader",
+                [],
+                dtype=pl.String
+            )
         })
 
 
     # ========================================================
-    # DISPLAY SUMMARY
+    # SHOW SUMMARY
     # ========================================================
 
     st.dataframe(
@@ -761,7 +722,7 @@ if uploaded_files:
 
 
     # ========================================================
-    # SUMMARY EXCEL
+    # DOWNLOAD SUMMARY
     # ========================================================
 
     summary_buffer = io.BytesIO()
@@ -771,7 +732,6 @@ if uploaded_files:
     )
 
     summary_buffer.seek(0)
-
 
     st.download_button(
 
@@ -803,30 +763,26 @@ if uploaded_files:
 
     if len(generated_files) == 1:
 
-        file_info = generated_files[0]
+        file = generated_files[0]
 
         st.download_button(
 
             label="⬇️ Download Updated Excel",
 
-            data=file_info["data"],
+            data=file["data"],
 
-            file_name=file_info["name"],
+            file_name=file["name"],
 
             mime=(
                 "application/vnd.openxmlformats-"
                 "officedocument.spreadsheetml.sheet"
             ),
 
-            key="download_single_file"
+            key="download_single"
         )
 
 
     elif len(generated_files) > 1:
-
-        # ====================================================
-        # CREATE ZIP
-        # ====================================================
 
         zip_buffer = io.BytesIO()
 
@@ -834,21 +790,16 @@ if uploaded_files:
             zip_buffer,
             "w",
             zipfile.ZIP_DEFLATED
-        ) as zip_file:
+        ) as z:
 
-            for file_info in generated_files:
+            for file in generated_files:
 
-                zip_file.writestr(
-                    file_info["name"],
-                    file_info["data"]
+                z.writestr(
+                    file["name"],
+                    file["data"]
                 )
 
         zip_buffer.seek(0)
-
-
-        # ====================================================
-        # DOWNLOAD ZIP
-        # ====================================================
 
         st.download_button(
 
@@ -864,44 +815,36 @@ if uploaded_files:
         )
 
 
-        # ====================================================
-        # INDIVIDUAL FILES
-        # ====================================================
-
         st.write(
             "### Individual Files"
         )
 
 
-        for index, file_info in enumerate(
+        for i, file in enumerate(
             generated_files
         ):
 
             st.download_button(
 
-                label=
-                    f"⬇️ {file_info['name']}",
+                label=f"⬇️ {file['name']}",
 
-                data=
-                    file_info["data"],
+                data=file["data"],
 
-                file_name=
-                    file_info["name"],
+                file_name=file["name"],
 
                 mime=(
                     "application/vnd.openxmlformats-"
                     "officedocument.spreadsheetml.sheet"
                 ),
 
-                key=
-                    f"download_file_{index}"
+                key=f"download_{i}"
             )
 
 
     else:
 
         st.warning(
-            "No files were generated."
+            "⚠️ No output files were generated."
         )
 
 
