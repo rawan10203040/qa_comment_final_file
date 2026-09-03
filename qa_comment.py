@@ -1,7 +1,6 @@
-
 # ============================================================
 # QA COMMENT UPDATER
-# Stable Streamlit Version
+# Stable + Optimized Streamlit Version
 #
 # Input Excel + Reference Excel
 # -> Updated Excel
@@ -62,7 +61,8 @@ REFERENCE_COLUMNS = [
 
 def clean_headers(df):
     """
-    Remove spaces from Excel column names.
+    Clean Excel column names.
+    Removes leading/trailing spaces.
     """
 
     df.columns = [
@@ -72,6 +72,8 @@ def clean_headers(df):
 
     return df
 
+
+# ============================================================
 
 def normalize_required_columns(
     df,
@@ -89,7 +91,6 @@ def normalize_required_columns(
     }
 
     rename_map = {}
-
     missing = []
 
     for required in required_columns:
@@ -124,11 +125,11 @@ def normalize_required_columns(
     return df
 
 
-def normalize_string_column(
-    series
-):
+# ============================================================
+
+def normalize_string_column(series):
     """
-    Convert values to strings safely.
+    Convert values to clean strings safely.
     """
 
     return (
@@ -139,9 +140,9 @@ def normalize_string_column(
     )
 
 
-def normalize_boolean(
-    series
-):
+# ============================================================
+
+def normalize_boolean(series):
     """
     Normalize TRUE/FALSE values.
     """
@@ -165,6 +166,10 @@ def normalize_boolean(
 )
 def load_reference():
 
+    # --------------------------------------------------------
+    # Check reference file
+    # --------------------------------------------------------
+
     if not REFERENCE_FILE.exists():
 
         raise FileNotFoundError(
@@ -172,6 +177,10 @@ def load_reference():
             "Make sure reference.xlsx is in the "
             "same folder as qa_comment.py."
         )
+
+    # --------------------------------------------------------
+    # Read reference
+    # --------------------------------------------------------
 
     try:
 
@@ -213,7 +222,7 @@ def load_reference():
     ].copy()
 
     # --------------------------------------------------------
-    # Normalize values
+    # Normalize reference values
     # --------------------------------------------------------
 
     for column in REFERENCE_COLUMNS:
@@ -225,8 +234,13 @@ def load_reference():
             .str.strip()
         )
 
+        reference.loc[
+            reference[column].eq(""),
+            column
+        ] = "-"
+
     # --------------------------------------------------------
-    # Lookup key
+    # Create lookup key
     # --------------------------------------------------------
 
     reference["_lookup"] = (
@@ -262,18 +276,15 @@ def process_file(
     # READ INPUT
     # ========================================================
 
-    file_bytes = uploaded_file.getvalue()
-
-    if not file_bytes:
-
-        raise ValueError(
-            f"'{uploaded_file.name}' is empty."
-        )
-
     try:
 
+        # Reset uploaded file position
+        uploaded_file.seek(0)
+
+        # Read directly from uploaded file
+        # instead of getvalue() + BytesIO()
         df = pd.read_excel(
-            io.BytesIO(file_bytes),
+            uploaded_file,
             engine="openpyxl",
         )
 
@@ -282,6 +293,16 @@ def process_file(
         raise RuntimeError(
             f"Could not read '{uploaded_file.name}'.\n\n"
             f"Details: {exc}"
+        )
+
+    # --------------------------------------------------------
+    # Check empty file
+    # --------------------------------------------------------
+
+    if df is None or df.empty:
+
+        raise ValueError(
+            f"'{uploaded_file.name}' is empty."
         )
 
     input_rows = len(df)
@@ -305,24 +326,32 @@ def process_file(
     # NORMALIZE INPUT VALUES
     # ========================================================
 
-    df["FunctionName"] = normalize_string_column(
-        df["FunctionName"]
+    df["FunctionName"] = (
+        normalize_string_column(
+            df["FunctionName"]
+        )
     )
 
-    df["QAComment"] = normalize_string_column(
-        df["QAComment"]
+    df["QAComment"] = (
+        normalize_string_column(
+            df["QAComment"]
+        )
     )
 
-    df["_multi"] = normalize_boolean(
-        df["IsMultiValue"]
+    df["_multi"] = (
+        normalize_boolean(
+            df["IsMultiValue"]
+        )
     )
 
-    df["_blank"] = normalize_boolean(
-        df["HasBlankValue"]
+    df["_blank"] = (
+        normalize_boolean(
+            df["HasBlankValue"]
+        )
     )
 
     # ========================================================
-    # PACKING LOGIC
+    # PACKING IDENTIFICATION
     # ========================================================
 
     is_packing = (
@@ -332,9 +361,9 @@ def process_file(
         .eq("packing")
     )
 
-    # --------------------------------------------------------
-    # Default / normal logic
-    # --------------------------------------------------------
+    # ========================================================
+    # NORMAL LOGIC
+    # ========================================================
 
     normal_conditions = [
 
@@ -422,6 +451,10 @@ def process_file(
         "conflict",
     ]
 
+    # --------------------------------------------------------
+    # Apply packing logic
+    # --------------------------------------------------------
+
     for condition, value in zip(
         packing_conditions,
         packing_values,
@@ -433,7 +466,7 @@ def process_file(
         ] = value
 
     # ========================================================
-    # CREATE LOOKUP
+    # CREATE LOOKUP KEY
     # ========================================================
 
     df["_lookup"] = (
@@ -466,12 +499,14 @@ def process_file(
     # FILL REFERENCE VALUES
     # ========================================================
 
-    for column in [
+    reference_output_columns = [
         "Action",
         "Area",
         "Group",
         "Team leader",
-    ]:
+    ]
+
+    for column in reference_output_columns:
 
         df[column] = (
             df[column]
@@ -664,7 +699,7 @@ def dataframe_to_excel(
             )
 
         # ----------------------------------------------------
-        # Reasonable column widths
+        # Column widths
         # ----------------------------------------------------
 
         for index, column in enumerate(
@@ -673,13 +708,22 @@ def dataframe_to_excel(
 
             try:
 
-                max_length = max(
-                    len(str(column)),
+                sample_lengths = (
                     df[column]
                     .astype(str)
                     .head(1000)
                     .map(len)
-                    .max(),
+                )
+
+                sample_max = (
+                    sample_lengths.max()
+                    if not sample_lengths.empty
+                    else 0
+                )
+
+                max_length = max(
+                    len(str(column)),
+                    sample_max,
                 )
 
                 width = min(
@@ -747,6 +791,7 @@ uploaded_files = st.file_uploader(
     "Upload Input Excel File(s)",
     type=["xlsx"],
     accept_multiple_files=True,
+    help="You can select one or more .xlsx files.",
 )
 
 
@@ -773,7 +818,7 @@ if uploaded_files:
     if st.button(
         "🚀 Process Files",
         type="primary",
-        use_container_width=True,
+        width="stretch",
     ):
 
         progress = st.progress(0)
@@ -837,13 +882,17 @@ if uploaded_files:
                 )
 
                 # =================================================
-                # METRICS
+                # SUCCESS MESSAGE
                 # =================================================
 
                 st.success(
                     f"✅ {uploaded_file.name} "
                     "processed successfully"
                 )
+
+                # =================================================
+                # METRICS
+                # =================================================
 
                 col1, col2, col3, col4 = st.columns(4)
 
@@ -894,7 +943,7 @@ if uploaded_files:
                         f"output_{index}_"
                         f"{uploaded_file.name}"
                     ),
-                    use_container_width=True,
+                    width="stretch",
                 )
 
                 # =================================================
@@ -912,7 +961,7 @@ if uploaded_files:
 
                             st.dataframe(
                                 result_df.head(100),
-                                use_container_width=True,
+                                width="stretch",
                             )
 
                         else:
@@ -934,7 +983,7 @@ if uploaded_files:
 
                     st.dataframe(
                         summary_df,
-                        use_container_width=True,
+                        width="stretch",
                     )
 
                     summary_bytes = (
@@ -961,8 +1010,11 @@ if uploaded_files:
                             f"summary_{index}_"
                             f"{uploaded_file.name}"
                         ),
-                        use_container_width=True,
+                        width="stretch",
                     )
+
+                    # Release summary bytes
+                    del summary_bytes
 
                 else:
 
@@ -972,7 +1024,7 @@ if uploaded_files:
                     )
 
                 # ------------------------------------------------
-                # Release references
+                # Release temporary references
                 # ------------------------------------------------
 
                 del result_df
@@ -989,6 +1041,10 @@ if uploaded_files:
                 )
 
                 st.exception(exc)
+
+            # ----------------------------------------------------
+            # Progress
+            # ----------------------------------------------------
 
             progress.progress(
                 index / total
