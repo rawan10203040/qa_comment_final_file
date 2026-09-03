@@ -18,7 +18,7 @@ import polars as pl
 st.set_page_config(
     page_title="QA Comment Updater",
     page_icon="✅",
-    layout="wide"
+    layout="wide",
 )
 
 
@@ -31,7 +31,7 @@ REFERENCE_FILE = BASE_DIR / "reference.xlsx"
 
 
 # ============================================================
-# CONSTANTS
+# REQUIRED COLUMNS
 # ============================================================
 
 REQUIRED_INPUT_COLUMNS = [
@@ -56,20 +56,22 @@ REQUIRED_REFERENCE_COLUMNS = [
 
 def clean_column_names(df: pl.DataFrame) -> pl.DataFrame:
     """
-    Clean Excel column names.
+    Remove spaces from Excel column names.
     """
-    new_names = {}
 
-    for col in df.columns:
-        new_names[col] = str(col).strip()
+    return df.rename({
+        col: str(col).strip()
+        for col in df.columns
+    })
 
-    return df.rename(new_names)
 
-
-def normalize_columns(df: pl.DataFrame, required_columns: list[str]) -> pl.DataFrame:
+def normalize_columns(
+    df: pl.DataFrame,
+    required_columns: list[str],
+) -> pl.DataFrame:
     """
-    Rename columns case-insensitively so small differences
-    in Excel headers do not break the app.
+    Match required columns without being sensitive
+    to upper/lower case.
     """
 
     lookup = {
@@ -80,6 +82,7 @@ def normalize_columns(df: pl.DataFrame, required_columns: list[str]) -> pl.DataF
     rename_map = {}
 
     for required in required_columns:
+
         key = required.strip().lower()
 
         if key not in lookup:
@@ -87,10 +90,10 @@ def normalize_columns(df: pl.DataFrame, required_columns: list[str]) -> pl.DataF
                 f"Missing required column: '{required}'"
             )
 
-        actual_name = lookup[key]
+        actual_column = lookup[key]
 
-        if actual_name != required:
-            rename_map[actual_name] = required
+        if actual_column != required:
+            rename_map[actual_column] = required
 
     if rename_map:
         df = df.rename(rename_map)
@@ -100,12 +103,13 @@ def normalize_columns(df: pl.DataFrame, required_columns: list[str]) -> pl.DataF
 
 def normalize_bool_expression(column: str) -> pl.Expr:
     """
-    Convert TRUE/FALSE-like Excel values into normalized strings.
+    Normalize TRUE/FALSE values.
     """
 
     return (
         pl.col(column)
         .cast(pl.String, strict=False)
+        .fill_null("")
         .str.strip_chars()
         .str.to_lowercase()
     )
@@ -119,11 +123,15 @@ def normalize_bool_expression(column: str) -> pl.Expr:
 def load_reference() -> pl.DataFrame:
 
     if not REFERENCE_FILE.exists():
+
         raise FileNotFoundError(
-            f"reference.xlsx was not found in:\n{REFERENCE_FILE}"
+            "reference.xlsx was not found.\n\n"
+            "Make sure reference.xlsx is in the same "
+            "GitHub folder as qa_comment.py."
         )
 
     try:
+
         reference = pl.read_excel(
             REFERENCE_FILE,
             engine="calamine",
@@ -131,43 +139,47 @@ def load_reference() -> pl.DataFrame:
         )
 
     except Exception as e:
+
         raise RuntimeError(
             f"Could not read reference.xlsx:\n{e}"
         )
 
+    # Clean headers
     reference = clean_column_names(reference)
 
+    # Normalize required headers
     reference = normalize_columns(
         reference,
-        REQUIRED_REFERENCE_COLUMNS
+        REQUIRED_REFERENCE_COLUMNS,
     )
 
-    # Keep only the columns we actually need
+    # Keep only required columns
     reference = reference.select(
         REQUIRED_REFERENCE_COLUMNS
     )
 
-    # Convert everything to string
-    for col in REQUIRED_REFERENCE_COLUMNS:
-        reference = reference.with_columns(
-            pl.col(col)
-            .cast(pl.String, strict=False)
-            .fill_null("-")
-            .str.strip_chars()
-            .alias(col)
-        )
+    # Convert columns to string
+    reference = reference.with_columns([
+        pl.col(col)
+        .cast(pl.String, strict=False)
+        .fill_null("-")
+        .str.strip_chars()
+        .alias(col)
+        for col in REQUIRED_REFERENCE_COLUMNS
+    ])
 
-    # Create lookup key
+    # Lookup key
     reference = reference.with_columns(
         pl.col("FunctionName")
         .str.to_lowercase()
+        .str.strip_chars()
         .alias("_lookup")
     )
 
-    # Remove duplicate FunctionName entries
+    # Remove duplicate functions
     reference = reference.unique(
         subset=["_lookup"],
-        keep="first"
+        keep="first",
     )
 
     return reference
@@ -179,19 +191,17 @@ def load_reference() -> pl.DataFrame:
 
 def process_file(
     uploaded_file,
-    reference: pl.DataFrame
+    reference: pl.DataFrame,
 ):
-    """
-    Process one uploaded Excel file.
-    """
 
     file_bytes = uploaded_file.getvalue()
 
     # --------------------------------------------------------
-    # Read Excel using Polars + Calamine
+    # READ INPUT EXCEL
     # --------------------------------------------------------
 
     try:
+
         df = pl.read_excel(
             io.BytesIO(file_bytes),
             engine="calamine",
@@ -199,97 +209,99 @@ def process_file(
         )
 
     except Exception as e:
+
         raise RuntimeError(
             f"Could not read '{uploaded_file.name}':\n{e}"
         )
 
     # --------------------------------------------------------
-    # Clean columns
+    # CLEAN COLUMN NAMES
     # --------------------------------------------------------
 
     df = clean_column_names(df)
 
+    # --------------------------------------------------------
+    # CHECK REQUIRED COLUMNS
+    # --------------------------------------------------------
+
     df = normalize_columns(
         df,
-        REQUIRED_INPUT_COLUMNS
+        REQUIRED_INPUT_COLUMNS,
     )
 
     # --------------------------------------------------------
-    # Make required columns strings
+    # NORMALIZE MAIN COLUMNS
     # --------------------------------------------------------
 
     df = df.with_columns([
+
         pl.col("FunctionName")
         .cast(pl.String, strict=False)
         .fill_null("")
-        .str.strip_chars(),
+        .str.strip_chars()
+        .alias("FunctionName"),
 
         pl.col("QAComment")
         .cast(pl.String, strict=False)
         .fill_null("")
-        .str.strip_chars(),
-    ])
+        .str.strip_chars()
+        .alias("QAComment"),
 
-    # --------------------------------------------------------
-    # Normalize boolean columns
-    # --------------------------------------------------------
+        normalize_bool_expression(
+            "IsMultiValue"
+        ).alias("_multi"),
 
-    df = df.with_columns([
-        normalize_bool_expression("IsMultiValue")
-        .alias("_multi"),
-
-        normalize_bool_expression("HasBlankValue")
-        .alias("_blank"),
+        normalize_bool_expression(
+            "HasBlankValue"
+        ).alias("_blank"),
     ])
 
     # ========================================================
     # QA COMMENT LOGIC
     # ========================================================
 
-    # Packing:
-    #
-    # TRUE  + FALSE -> ok
-    # TRUE  + TRUE  -> null
-    # FALSE + FALSE -> conflict
-    # FALSE + TRUE  -> conflict
-    #
-    # Other:
-    #
-    # TRUE  + FALSE -> conflict
-    # TRUE  + TRUE  -> conflict
-    # FALSE + FALSE -> ok
-    # FALSE + TRUE  -> null
-
     is_packing = (
         pl.col("FunctionName")
         .str.to_lowercase()
+        .str.strip_chars()
         == "packing"
     )
 
-    new_comment = (
+    new_qa_comment = (
+
+        # ----------------------------------------------------
+        # PACKING
+        # ----------------------------------------------------
+
         pl.when(is_packing)
+
         .then(
+
             pl.when(
                 (pl.col("_multi") == "true")
-                & (pl.col("_blank") == "false")
+                &
+                (pl.col("_blank") == "false")
             )
             .then(pl.lit("ok"))
 
             .when(
                 (pl.col("_multi") == "true")
-                & (pl.col("_blank") == "true")
+                &
+                (pl.col("_blank") == "true")
             )
             .then(pl.lit("null"))
 
             .when(
                 (pl.col("_multi") == "false")
-                & (pl.col("_blank") == "false")
+                &
+                (pl.col("_blank") == "false")
             )
             .then(pl.lit("conflict"))
 
             .when(
                 (pl.col("_multi") == "false")
-                & (pl.col("_blank") == "true")
+                &
+                (pl.col("_blank") == "true")
             )
             .then(pl.lit("conflict"))
 
@@ -298,28 +310,37 @@ def process_file(
             )
         )
 
+        # ----------------------------------------------------
+        # OTHER FUNCTIONS
+        # ----------------------------------------------------
+
         .otherwise(
+
             pl.when(
                 (pl.col("_multi") == "true")
-                & (pl.col("_blank") == "false")
+                &
+                (pl.col("_blank") == "false")
             )
             .then(pl.lit("conflict"))
 
             .when(
                 (pl.col("_multi") == "true")
-                & (pl.col("_blank") == "true")
+                &
+                (pl.col("_blank") == "true")
             )
             .then(pl.lit("conflict"))
 
             .when(
                 (pl.col("_multi") == "false")
-                & (pl.col("_blank") == "false")
+                &
+                (pl.col("_blank") == "false")
             )
             .then(pl.lit("ok"))
 
             .when(
                 (pl.col("_multi") == "false")
-                & (pl.col("_blank") == "true")
+                &
+                (pl.col("_blank") == "true")
             )
             .then(pl.lit("null"))
 
@@ -330,7 +351,7 @@ def process_file(
     )
 
     df = df.with_columns(
-        new_comment.alias("QAComment")
+        new_qa_comment.alias("QAComment")
     )
 
     # ========================================================
@@ -345,26 +366,29 @@ def process_file(
     )
 
     # ========================================================
-    # JOIN WITH REFERENCE
+    # JOIN REFERENCE
     # ========================================================
 
+    reference_small = reference.select([
+        "_lookup",
+        "Action",
+        "Area",
+        "Group",
+        "Team leader",
+    ])
+
     df = df.join(
-        reference.select([
-            "_lookup",
-            "Action",
-            "Area",
-            "Group",
-            "Team leader",
-        ]),
+        reference_small,
         on="_lookup",
         how="left",
     )
 
-    # --------------------------------------------------------
-    # Fill missing reference values
-    # --------------------------------------------------------
+    # ========================================================
+    # FILL MISSING REFERENCE VALUES
+    # ========================================================
 
     df = df.with_columns([
+
         pl.col("Action")
         .cast(pl.String, strict=False)
         .fill_null("-")
@@ -387,7 +411,7 @@ def process_file(
     ])
 
     # ========================================================
-    # REMOVE ANALYSIS
+    # REMOVE ACTION = ANALYSIS
     # ========================================================
 
     df = df.filter(
@@ -397,7 +421,7 @@ def process_file(
     )
 
     # ========================================================
-    # REMOVE OK
+    # REMOVE QA COMMENT = OK
     # ========================================================
 
     df = df.filter(
@@ -407,7 +431,7 @@ def process_file(
     )
 
     # ========================================================
-    # FIRST COLUMNS
+    # COLUMN ORDER
     # ========================================================
 
     first_columns = [
@@ -417,21 +441,23 @@ def process_file(
         "Team leader",
     ]
 
+    helper_columns = [
+        "_lookup",
+        "_multi",
+        "_blank",
+        "Action",
+    ]
+
     remaining_columns = [
         col
         for col in df.columns
         if col not in first_columns
-        and col not in [
-            "_lookup",
-            "_multi",
-            "_blank",
-            "Action",
-        ]
+        and col not in helper_columns
     ]
 
-    final_columns = first_columns + remaining_columns
-
-    df = df.select(final_columns)
+    df = df.select(
+        first_columns + remaining_columns
+    )
 
     # ========================================================
     # SUMMARY
@@ -463,7 +489,7 @@ def process_file(
 
 def dataframe_to_excel(
     df: pl.DataFrame,
-    sheet_name: str = "Output"
+    sheet_name: str = "Output",
 ) -> bytes:
 
     output = io.BytesIO()
@@ -481,39 +507,44 @@ def dataframe_to_excel(
 # CREATE ZIP
 # ============================================================
 
-def create_zip(files: list[tuple[str, bytes]]) -> bytes:
+def create_zip(
+    files: list[tuple[str, bytes]],
+) -> bytes:
 
     zip_buffer = io.BytesIO()
 
     with zipfile.ZipFile(
         zip_buffer,
         mode="w",
-        compression=zipfile.ZIP_DEFLATED
+        compression=zipfile.ZIP_DEFLATED,
     ) as z:
 
         for filename, content in files:
+
             z.writestr(
                 filename,
-                content
+                content,
             )
 
     return zip_buffer.getvalue()
 
 
 # ============================================================
-# UI
+# STREAMLIT UI
 # ============================================================
 
-st.title("✅ QA Comment Updater")
+st.title(
+    "✅ QA Comment Updater"
+)
 
 st.write(
-    "Upload one or more Excel files to update QA Comments "
-    "using the Reference mapping."
+    "Upload one or more Excel files to update "
+    "QA Comments using the Reference mapping."
 )
 
 
 # ============================================================
-# CHECK REFERENCE
+# LOAD REFERENCE
 # ============================================================
 
 try:
@@ -533,7 +564,7 @@ except Exception as e:
 
 
 # ============================================================
-# UPLOAD FILES
+# FILE UPLOADER
 # ============================================================
 
 uploaded_files = st.file_uploader(
@@ -549,12 +580,12 @@ uploaded_files = st.file_uploader(
 
 show_preview = st.checkbox(
     "Show preview after processing",
-    value=False
+    value=False,
 )
 
 
 # ============================================================
-# PROCESS BUTTON
+# PROCESS
 # ============================================================
 
 if uploaded_files:
@@ -566,10 +597,11 @@ if uploaded_files:
     if st.button(
         "🚀 Process Files",
         type="primary",
-        use_container_width=True
+        use_container_width=True,
     ):
 
         output_files = []
+
         all_summaries = []
 
         progress = st.progress(0)
@@ -578,9 +610,13 @@ if uploaded_files:
 
         total_files = len(uploaded_files)
 
+        # ====================================================
+        # PROCESS EACH FILE
+        # ====================================================
+
         for index, uploaded_file in enumerate(
             uploaded_files,
-            start=1
+            start=1,
         ):
 
             status.write(
@@ -590,18 +626,14 @@ if uploaded_files:
 
             try:
 
-                # --------------------------------------------
-                # PROCESS
-                # --------------------------------------------
-
                 result_df, summary_df = process_file(
                     uploaded_file,
-                    reference_df
+                    reference_df,
                 )
 
-                # --------------------------------------------
+                # ------------------------------------------------
                 # OUTPUT FILE NAME
-                # --------------------------------------------
+                # ------------------------------------------------
 
                 original_name = Path(
                     uploaded_file.name
@@ -611,38 +643,39 @@ if uploaded_files:
                     f"{original_name}_Updated.xlsx"
                 )
 
-                # --------------------------------------------
-                # WRITE EXCEL
-                # --------------------------------------------
+                # ------------------------------------------------
+                # CREATE OUTPUT EXCEL
+                # ------------------------------------------------
 
                 excel_bytes = dataframe_to_excel(
                     result_df,
-                    "Output"
+                    "Output",
                 )
 
                 output_files.append(
                     (
                         output_name,
-                        excel_bytes
+                        excel_bytes,
                     )
                 )
 
-                # --------------------------------------------
-                # ADD FILE NAME TO SUMMARY
-                # --------------------------------------------
+                # ------------------------------------------------
+                # SUMMARY
+                # ------------------------------------------------
 
                 summary_df = summary_df.with_columns(
-                    pl.lit(uploaded_file.name)
-                    .alias("Source File")
+                    pl.lit(
+                        uploaded_file.name
+                    ).alias("Source File")
                 )
 
                 all_summaries.append(
                     summary_df
                 )
 
-                # --------------------------------------------
-                # PREVIEW ONLY IF REQUESTED
-                # --------------------------------------------
+                # ------------------------------------------------
+                # OPTIONAL PREVIEW
+                # ------------------------------------------------
 
                 if show_preview:
 
@@ -650,23 +683,24 @@ if uploaded_files:
                         f"Preview: {uploaded_file.name}"
                     ):
 
+                        st.write(
+                            f"Output rows: "
+                            f"{result_df.height:,}"
+                        )
+
                         st.dataframe(
                             result_df
                             .head(100)
                             .to_dicts(),
-                            use_container_width=True
-                        )
-
-                        st.write(
-                            f"Rows in output: "
-                            f"{result_df.height:,}"
+                            use_container_width=True,
                         )
 
             except Exception as e:
 
                 st.error(
                     f"❌ Error processing "
-                    f"'{uploaded_file.name}':\n\n{e}"
+                    f"'{uploaded_file.name}':\n\n"
+                    f"{e}"
                 )
 
             progress.progress(
@@ -675,18 +709,17 @@ if uploaded_files:
 
         status.empty()
 
-        # ====================================================
-        # SUMMARY
-        # ====================================================
+        # ========================================================
+        # FINAL SUMMARY
+        # ========================================================
 
         if all_summaries:
 
             final_summary = pl.concat(
                 all_summaries,
-                how="diagonal"
+                how="diagonal",
             )
 
-            # Put Source File first
             summary_columns = [
                 "Source File",
                 "Area",
@@ -703,9 +736,13 @@ if uploaded_files:
                 ]
             )
 
+            # ----------------------------------------------------
+            # SUMMARY EXCEL
+            # ----------------------------------------------------
+
             summary_bytes = dataframe_to_excel(
                 final_summary,
-                "Summary"
+                "Summary",
             )
 
             st.success(
@@ -713,16 +750,20 @@ if uploaded_files:
                 f"{len(output_files)} file(s)"
             )
 
-            # =================================================
-            # DOWNLOAD OUTPUTS
-            # =================================================
+            # ====================================================
+            # SINGLE FILE
+            # ====================================================
 
             if len(output_files) == 1:
 
-                filename, content = output_files[0]
+                filename, content = (
+                    output_files[0]
+                )
 
                 st.download_button(
-                    label=f"⬇️ Download {filename}",
+                    label=(
+                        f"⬇️ Download {filename}"
+                    ),
                     data=content,
                     file_name=filename,
                     mime=(
@@ -732,6 +773,10 @@ if uploaded_files:
                     use_container_width=True,
                 )
 
+            # ====================================================
+            # MULTIPLE FILES
+            # ====================================================
+
             else:
 
                 zip_bytes = create_zip(
@@ -739,14 +784,21 @@ if uploaded_files:
                 )
 
                 st.download_button(
-                    label="🗜️ Download All Updated Files (ZIP)",
+                    label=(
+                        "🗜️ Download All Updated "
+                        "Files (ZIP)"
+                    ),
                     data=zip_bytes,
-                    file_name="QA_Updated_Files.zip",
+                    file_name=(
+                        "QA_Updated_Files.zip"
+                    ),
                     mime="application/zip",
                     use_container_width=True,
                 )
 
-                st.subheader("Individual Files")
+                st.subheader(
+                    "Individual Files"
+                )
 
                 for filename, content in output_files:
 
@@ -758,14 +810,18 @@ if uploaded_files:
                             "application/vnd.openxmlformats-"
                             "officedocument.spreadsheetml.sheet"
                         ),
-                        key=f"download_{filename}",
+                        key=(
+                            f"download_{filename}"
+                        ),
                     )
 
-            # =================================================
+            # ====================================================
             # SUMMARY DOWNLOAD
-            # =================================================
+            # ====================================================
 
-            st.subheader("📊 QA Summary")
+            st.subheader(
+                "📊 QA Summary"
+            )
 
             st.download_button(
                 label="⬇️ Download QA Summary",
@@ -778,10 +834,10 @@ if uploaded_files:
                 use_container_width=True,
             )
 
-            # Show summary only
+            # Show summary
             st.dataframe(
                 final_summary.to_dicts(),
-                use_container_width=True
+                use_container_width=True,
             )
 
         else:
