@@ -34,24 +34,118 @@ st.write(
 
 
 # ============================================================
-# REFERENCE DATA
+# LOAD REFERENCE.CSV
 # ============================================================
-reference_df = pl.read_csv(
-    "reference.csv",
-    infer_schema_length=None
-)
-mapping_df = reference_df.select([
-    pl.col("FunctionName")
-    .cast(pl.Utf8)
-    .str.strip_chars()
-    .str.to_lowercase()
-    .alias("FunctionName_lookup"),
 
-    pl.col("Action"),
-    pl.col("Area"),
-    pl.col("Group"),
-    pl.col("Team leader")
-])
+@st.cache_data
+def load_reference():
+
+    reference_df = pl.read_csv(
+        "reference.csv",
+        infer_schema_length=None,
+        ignore_errors=False
+    )
+
+    required_reference_columns = [
+        "FunctionName",
+        "Action",
+        "Area",
+        "Group",
+        "Team leader"
+    ]
+
+    missing_reference_columns = [
+        c
+        for c in required_reference_columns
+        if c not in reference_df.columns
+    ]
+
+    if missing_reference_columns:
+
+        raise ValueError(
+            "reference.csv is missing required columns: "
+            + ", ".join(missing_reference_columns)
+        )
+
+    # --------------------------------------------------------
+    # Clean Reference
+    # --------------------------------------------------------
+
+    reference_df = reference_df.with_columns([
+
+        pl.col("FunctionName")
+        .cast(pl.Utf8, strict=False)
+        .fill_null("")
+        .str.strip_chars()
+        .str.to_lowercase()
+        .alias("FunctionName_lookup"),
+
+        pl.col("Action")
+        .cast(pl.Utf8, strict=False)
+        .fill_null("")
+        .str.strip_chars(),
+
+        pl.col("Area")
+        .cast(pl.Utf8, strict=False)
+        .fill_null("")
+        .str.strip_chars(),
+
+        pl.col("Group")
+        .cast(pl.Utf8, strict=False)
+        .fill_null("")
+        .str.strip_chars(),
+
+        pl.col("Team leader")
+        .cast(pl.Utf8, strict=False)
+        .fill_null("")
+        .str.strip_chars()
+    ])
+
+    # --------------------------------------------------------
+    # Keep only required mapping columns
+    # --------------------------------------------------------
+
+    mapping_df = reference_df.select([
+        "FunctionName_lookup",
+        "Action",
+        "Area",
+        "Group",
+        "Team leader"
+    ])
+
+    # --------------------------------------------------------
+    # Remove duplicate FunctionName mappings
+    #
+    # This prevents duplicate rows after JOIN if the same
+    # FunctionName appears more than once in reference.csv.
+    # --------------------------------------------------------
+
+    mapping_df = mapping_df.unique(
+        subset=["FunctionName_lookup"],
+        keep="first"
+    )
+
+    return mapping_df
+
+
+# ============================================================
+# LOAD REFERENCE
+# ============================================================
+
+try:
+
+    mapping_df = load_reference()
+
+except Exception as e:
+
+    st.error(
+        "❌ Could not load reference.csv"
+    )
+
+    st.exception(e)
+
+    st.stop()
+
 
 # ============================================================
 # FILE UPLOADER
@@ -78,6 +172,7 @@ if uploaded_files:
         f"{len(uploaded_files)} file(s) uploaded."
     )
 
+
     # ========================================================
     # PROCESS EACH FILE
     # ========================================================
@@ -96,20 +191,18 @@ if uploaded_files:
             # READ EXCEL
             # ==================================================
 
-            file_bytes = (
-                uploaded_file.getvalue()
-            )
+            file_bytes = uploaded_file.getvalue()
 
             df = pl.read_excel(
-                   io.BytesIO(file_bytes),
-                   infer_schema_length=None
+                io.BytesIO(file_bytes),
+                infer_schema_length=None
             )
 
             # ==================================================
             # REQUIRED COLUMNS
             # ==================================================
 
-            required = [
+            required_columns = [
                 "FunctionName",
                 "IsMultiValue",
                 "HasBlankValue",
@@ -117,24 +210,31 @@ if uploaded_files:
             ]
 
             missing_columns = [
-                c for c in required
+                c
+                for c in required_columns
                 if c not in df.columns
             ]
 
             if missing_columns:
 
                 st.error(
-                    f"Skipping `{filename}`. "
+                    f"❌ Skipping `{filename}`. "
                     f"Missing columns: "
                     f"{', '.join(missing_columns)}"
                 )
 
                 continue
 
-            original_count = df.height
 
             # ==================================================
-            # CLEAN DATA
+            # ORIGINAL ROW COUNT
+            # ==================================================
+
+            original_count = df.height
+
+
+            # ==================================================
+            # CLEAN INPUT DATA
             # ==================================================
 
             df = df.with_columns([
@@ -161,8 +261,8 @@ if uploaded_files:
                 .fill_null("")
                 .str.strip_chars()
                 .str.to_lowercase()
-
             ])
+
 
             # ==================================================
             # UPDATE QACOMMENT
@@ -175,10 +275,10 @@ if uploaded_files:
 
             df = df.with_columns(
 
-                # ----------------------------------------------
+                # ------------------------------------------------
                 # PACKING
                 # TRUE + FALSE = OK
-                # ----------------------------------------------
+                # ------------------------------------------------
 
                 pl.when(
                     (function_name == "packing")
@@ -189,10 +289,10 @@ if uploaded_files:
                 )
                 .then(pl.lit("ok"))
 
-                # ----------------------------------------------
+                # ------------------------------------------------
                 # PACKING
                 # TRUE + TRUE = NULL
-                # ----------------------------------------------
+                # ------------------------------------------------
 
                 .when(
                     (function_name == "packing")
@@ -203,10 +303,10 @@ if uploaded_files:
                 )
                 .then(pl.lit("null"))
 
-                # ----------------------------------------------
+                # ------------------------------------------------
                 # PACKING
                 # FALSE + FALSE = CONFLICT
-                # ----------------------------------------------
+                # ------------------------------------------------
 
                 .when(
                     (function_name == "packing")
@@ -217,10 +317,10 @@ if uploaded_files:
                 )
                 .then(pl.lit("conflict"))
 
-                # ----------------------------------------------
+                # ------------------------------------------------
                 # PACKING
                 # FALSE + TRUE = CONFLICT
-                # ----------------------------------------------
+                # ------------------------------------------------
 
                 .when(
                     (function_name == "packing")
@@ -231,11 +331,12 @@ if uploaded_files:
                 )
                 .then(pl.lit("conflict"))
 
-                # ==============================================
+                # =================================================
                 # OTHER FUNCTIONS
-                # ==============================================
+                # =================================================
 
                 # TRUE + FALSE = CONFLICT
+
                 .when(
                     (function_name != "packing")
                     &
@@ -246,6 +347,7 @@ if uploaded_files:
                 .then(pl.lit("conflict"))
 
                 # TRUE + TRUE = CONFLICT
+
                 .when(
                     (function_name != "packing")
                     &
@@ -256,6 +358,7 @@ if uploaded_files:
                 .then(pl.lit("conflict"))
 
                 # FALSE + FALSE = OK
+
                 .when(
                     (function_name != "packing")
                     &
@@ -266,6 +369,7 @@ if uploaded_files:
                 .then(pl.lit("ok"))
 
                 # FALSE + TRUE = NULL
+
                 .when(
                     (function_name != "packing")
                     &
@@ -276,6 +380,7 @@ if uploaded_files:
                 .then(pl.lit("null"))
 
                 # KEEP ORIGINAL
+
                 .otherwise(
                     pl.col("QAComment")
                 )
@@ -283,25 +388,6 @@ if uploaded_files:
                 .alias("QAComment")
             )
 
-            # ==================================================
-            # PREPARE REFERENCE
-            # ==================================================
-
-            mapping_df = reference_df.select([
-
-                pl.col("FunctionName")
-                .str.to_lowercase()
-                .alias("FunctionName_lookup"),
-
-                pl.col("Action"),
-
-                pl.col("Area"),
-
-                pl.col("Group"),
-
-                pl.col("Team leader")
-
-            ])
 
             # ==================================================
             # CREATE LOOKUP COLUMN
@@ -310,14 +396,16 @@ if uploaded_files:
             df = df.with_columns(
 
                 pl.col("FunctionName")
-               .cast(pl.Utf8)
-              .fill_null("")
-              .str.strip_chars()
-              .str.to_lowercase()
-              .alias("FunctionName_lookup")
-              )
+                .cast(pl.Utf8, strict=False)
+                .fill_null("")
+                .str.strip_chars()
+                .str.to_lowercase()
+                .alias("FunctionName_lookup")
+            )
+
+
             # ==================================================
-            # JOIN
+            # JOIN WITH REFERENCE
             # ==================================================
 
             df = df.join(
@@ -325,6 +413,7 @@ if uploaded_files:
                 on="FunctionName_lookup",
                 how="left"
             )
+
 
             # ==================================================
             # REMOVE TEMP COLUMN
@@ -334,48 +423,52 @@ if uploaded_files:
                 "FunctionName_lookup"
             )
 
+
             # ==================================================
-            # FILL MISSING VALUES
+            # FILL MISSING REFERENCE VALUES
             # ==================================================
 
             df = df.with_columns([
 
                 pl.col("Action")
+                .cast(pl.Utf8, strict=False)
                 .fill_null("-"),
 
                 pl.col("Area")
+                .cast(pl.Utf8, strict=False)
                 .fill_null("-"),
 
                 pl.col("Group")
+                .cast(pl.Utf8, strict=False)
                 .fill_null("-"),
 
                 pl.col("Team leader")
+                .cast(pl.Utf8, strict=False)
                 .fill_null("-")
-
             ])
+
 
             # ==================================================
             # REORDER COLUMNS
             # ==================================================
 
-            remaining_columns = [
-                c for c in df.columns
-                if c not in [
-                    "FunctionName",
-                    "Area",
-                    "Group",
-                    "Team leader"
-                ]
-            ]
-
-            df = df.select([
-
+            first_columns = [
                 "FunctionName",
                 "Area",
                 "Group",
                 "Team leader"
+            ]
 
-            ] + remaining_columns)
+            remaining_columns = [
+                c
+                for c in df.columns
+                if c not in first_columns
+            ]
+
+            df = df.select(
+                first_columns + remaining_columns
+            )
+
 
             # ==================================================
             # REMOVE ACTION = ANALYSIS
@@ -386,17 +479,20 @@ if uploaded_files:
             df = df.filter(
 
                 pl.col("Action")
+                .cast(pl.Utf8, strict=False)
+                .fill_null("")
+                .str.strip_chars()
                 .str.to_lowercase()
                 != "analysis"
-
             )
 
             removed_analysis = (
                 before_analysis - df.height
             )
 
+
             # ==================================================
-            # REMOVE QAComment = OK
+            # REMOVE QACOMMENT = OK
             # ==================================================
 
             before_ok = df.height
@@ -404,14 +500,17 @@ if uploaded_files:
             df = df.filter(
 
                 pl.col("QAComment")
+                .cast(pl.Utf8, strict=False)
+                .fill_null("")
+                .str.strip_chars()
                 .str.to_lowercase()
                 != "ok"
-
             )
 
             removed_ok = (
                 before_ok - df.height
             )
+
 
             # ==================================================
             # SUMMARY DATA
@@ -425,6 +524,8 @@ if uploaded_files:
 
                     .filter(
                         pl.col("QAComment")
+                        .cast(pl.Utf8, strict=False)
+                        .fill_null("")
                         .str.to_lowercase()
                         .is_in([
                             "conflict",
@@ -440,8 +541,8 @@ if uploaded_files:
                     .agg(
                         pl.len().alias("Counts")
                     )
-
                 )
+
 
                 for row in summary_df.iter_rows(
                     named=True
@@ -457,17 +558,27 @@ if uploaded_files:
 
                         "Team Leader":
                             row["Team leader"]
-
                     })
+
 
             # ==================================================
             # OUTPUT FILE NAME
             # ==================================================
 
-            output_name = (
-                filename[:-5]
-                + "_Updated.xlsx"
-            )
+            if filename.lower().endswith(".xlsx"):
+
+                output_name = (
+                    filename[:-5]
+                    + "_Updated.xlsx"
+                )
+
+            else:
+
+                output_name = (
+                    filename
+                    + "_Updated.xlsx"
+                )
+
 
             # ==================================================
             # WRITE EXCEL TO MEMORY
@@ -485,8 +596,9 @@ if uploaded_files:
                 output_buffer.getvalue()
             )
 
+
             # ==================================================
-            # SAVE OUTPUT
+            # SAVE OUTPUT IN MEMORY
             # ==================================================
 
             generated_files.append({
@@ -496,16 +608,17 @@ if uploaded_files:
 
                 "data":
                     output_bytes
-
             })
+
 
             # ==================================================
             # SUCCESS
             # ==================================================
 
             st.success(
-                f"✅ Created: {output_name}"
+                f"✅ Created: `{output_name}`"
             )
+
 
             # ==================================================
             # STATISTICS
@@ -541,6 +654,7 @@ if uploaded_files:
                     df.height
                 )
 
+
             # ==================================================
             # PREVIEW
             # ==================================================
@@ -555,11 +669,18 @@ if uploaded_files:
                     hide_index=True
                 )
 
+
         except Exception as e:
 
             st.error(
                 f"❌ Error processing `{filename}`: {str(e)}"
             )
+
+            with st.expander(
+                "🔎 Show technical error"
+            ):
+
+                st.exception(e)
 
 
     # ========================================================
@@ -572,13 +693,19 @@ if uploaded_files:
         "📋 FINAL SUMMARY"
     )
 
+
     if all_summary_rows:
 
         final_summary = pl.DataFrame(
-            all_summary_rows
+            all_summary_rows,
+            orient="row"
         )
 
+
+        # ----------------------------------------------------
         # Combine same Area + Team Leader
+        # ----------------------------------------------------
+
         final_summary = (
 
             final_summary
@@ -596,27 +723,29 @@ if uploaded_files:
                 "Counts",
                 descending=True
             )
-
         )
+
 
         final_summary = final_summary.select([
 
             "Area",
             "Counts",
             "Team Leader"
-
         ])
+
 
     else:
 
         final_summary = pl.DataFrame({
 
-            "Area": [],
+            "Area":
+                pl.Series([], dtype=pl.Utf8),
 
-            "Counts": [],
+            "Counts":
+                pl.Series([], dtype=pl.Int64),
 
-            "Team Leader": []
-
+            "Team Leader":
+                pl.Series([], dtype=pl.Utf8)
         })
 
 
@@ -643,6 +772,7 @@ if uploaded_files:
 
     summary_buffer.seek(0)
 
+
     st.download_button(
 
         label="📥 Download Summary Excel",
@@ -657,7 +787,6 @@ if uploaded_files:
         ),
 
         key="download_summary"
-
     )
 
 
@@ -670,6 +799,7 @@ if uploaded_files:
     st.header(
         "📥 DOWNLOAD OUTPUT FILES"
     )
+
 
     if len(generated_files) == 1:
 
@@ -689,8 +819,8 @@ if uploaded_files:
             ),
 
             key="download_single_file"
-
         )
+
 
     elif len(generated_files) > 1:
 
@@ -709,14 +839,12 @@ if uploaded_files:
             for file_info in generated_files:
 
                 zip_file.writestr(
-
                     file_info["name"],
-
                     file_info["data"]
-
                 )
 
         zip_buffer.seek(0)
+
 
         # ====================================================
         # DOWNLOAD ZIP
@@ -733,8 +861,8 @@ if uploaded_files:
             mime="application/zip",
 
             key="download_zip"
-
         )
+
 
         # ====================================================
         # INDIVIDUAL FILES
@@ -743,6 +871,7 @@ if uploaded_files:
         st.write(
             "### Individual Files"
         )
+
 
         for index, file_info in enumerate(
             generated_files
@@ -766,8 +895,8 @@ if uploaded_files:
 
                 key=
                     f"download_file_{index}"
-
             )
+
 
     else:
 
